@@ -1,0 +1,42 @@
+{
+  "startingBalance": 10,
+  "endingBalance": 0.04160000000000083,
+  "netPnL": -9.9584,
+  "peakBalance": 18.658,
+  "maxDrawdown": 18.6164,
+  "metrics": {
+    "totalTrades": 6,
+    "wins": 1,
+    "losses": 5,
+    "winRate": 0.16666666666666666,
+    "averageWin": 8.658,
+    "averageLoss": -3.7232800000000004
+  },
+  "lossDetails": [
+    {
+      "file": "logs/early-bird-btc-updown-5m-1778968200.log",
+      "pnl": -13.0264,
+      "balanceAfterLoss": 5.631600000000001
+    },
+    {
+      "file": "logs/early-bird-btc-updown-5m-1778978400.log",
+      "pnl": -4.97,
+      "balanceAfterLoss": 0.6616000000000009
+    },
+    {
+      "file": "logs/early-bird-btc-updown-5m-1779086100.log",
+      "pnl": -0.27,
+      "balanceAfterLoss": 0.39160000000000084
+    },
+    {
+      "file": "logs/early-bird-btc-updown-5m-1779641700.log",
+      "pnl": -0.25,
+      "balanceAfterLoss": 0.14160000000000084
+    },
+    {
+      "file": "logs/early-bird-btc-updown-5m-1779643200.log",
+      "pnl": -0.1,
+      "balanceAfterLoss": 0.04160000000000083
+    }
+  ]
+}

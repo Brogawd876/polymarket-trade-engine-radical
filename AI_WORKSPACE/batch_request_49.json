@@ -1,0 +1,20 @@
+{
+  "variants": [
+    "simulation",
+    "late-entry",
+    "late-entry-120s",
+    "late-entry-loose",
+    "late-entry-strict",
+    "late-entry-optimized",
+    "late-entry-adaptive"
+  ],
+  "files": [
+    "logs/early-bird-btc-updown-5m-1778891400.log",
+    "logs/early-bird-btc-updown-5m-1778896500.log",
+    "logs/early-bird-btc-updown-5m-1778897400.log",
+    "logs/early-bird-btc-updown-5m-1778898900.log",
+    "logs/early-bird-btc-updown-5m-1778900100.log",
+    "logs/early-bird-btc-updown-5m-1778901900.log",
+    "logs/early-bird-btc-updown-5m-1779067500.log"
+  ]
+}

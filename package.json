@@ -1,0 +1,27 @@
+{
+  "name": "early-bird-engine",
+  "module": "index.ts",
+  "type": "module",
+  "scripts": {
+    "check": "tsc -b --noEmit",
+    "wallet": "bun run scripts/wallet.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/sinon": "^21.0.1",
+    "prettier": "^3.8.1",
+    "sinon": "^21.1.2",
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@ethersproject/wallet": "^5.8.0",
+    "@js-sdsl/ordered-map": "^4.4.2",
+    "@polymarket/builder-relayer-client": "^0.0.9",
+    "@polymarket/builder-signing-sdk": "^1.0.0",
+    "@polymarket/clob-client-v2": "^1.0.6",
+    "commander": "^14.0.3",
+    "dotenv": "^17.4.2",
+    "ethers": "^6",
+    "viem": "^2"
+  }
+}

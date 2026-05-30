@@ -1,0 +1,64 @@
+{
+  "id": "43f1fa18-8d2d-4bd0-b92e-12c91b9c6120",
+  "strategy": "fvm-v2.1.1-safeguarded",
+  "baseStrategy": "fair-value-maker",
+  "variantLabel": "FVM v2.1.1 (Safeguarded Hybrid)",
+  "paperEligible": false,
+  "file": "logs/early-bird-btc-updown-5m-1778968200.log",
+  "slug": "btc-updown-5m-1778968200",
+  "status": "failed",
+  "pnl": null,
+  "direction": null,
+  "openPrice": null,
+  "closePrice": null,
+  "counts": {
+    "intents": 0,
+    "allowed": 0,
+    "blocked": 0,
+    "fills": 0,
+    "problems": 0,
+    "settlements": 0
+  },
+  "verdict": "failed",
+  "brierScore": null,
+  "logLoss": null,
+  "execution": {
+    "fillRate": null,
+    "cancelRate": null,
+    "takerFeeSpend": 0,
+    "makerRebateEstimate": 0,
+    "grossEdgeCapture": null,
+    "turnover": 0,
+    "maxDrawdown": 0,
+    "markouts": {
+      "oneSecond": null,
+      "fiveSecond": null,
+      "thirtySecond": null,
+      "settlement": null,
+      "samples": 0,
+      "unavailableCount": 0,
+      "unavailableReasons": {}
+    },
+    "conservativeFill": {
+      "conservativeFillEvidenceAvailable": false,
+      "conservativeFillEvidenceSource": "unavailable",
+      "conservativeFillVerdictCounts": {
+        "no_fill": 0,
+        "touch_only": 0,
+        "probable_fill": 0,
+        "trade_through_fill": 0,
+        "unknown_insufficient_data": 0
+      },
+      "conservativeFillUnavailableReasons": {},
+      "conservativeMarkout1sAvg": null,
+      "conservativeMarkout5sAvg": null,
+      "conservativeMarkout30sAvg": null,
+      "conservativeAdverseSelectionRate": null,
+      "usableEvidenceCount": 0,
+      "evaluatedFillCount": 0,
+      "eligibleFillCount": 0,
+      "evidence": []
+    }
+  },
+  "error": "targetNotional is not defined"
+}

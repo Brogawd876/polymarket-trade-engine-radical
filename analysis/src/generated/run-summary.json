@@ -1,0 +1,93 @@
+{
+  "generatedAt": "2026-05-16T00:47:43.063Z",
+  "repoRoot": "C:\\Users\\Yasser\\Documents\\trade\\Polymarket-Deck-Lab\\repos\\polymarket-trade-engine",
+  "logsDir": "C:\\Users\\Yasser\\Documents\\trade\\Polymarket-Deck-Lab\\repos\\polymarket-trade-engine\\logs",
+  "statePath": "C:\\Users\\Yasser\\Documents\\trade\\Polymarket-Deck-Lab\\repos\\polymarket-trade-engine\\state\\early-bird.json",
+  "sessionPnl": 1.05,
+  "sessionLoss": 0,
+  "activeMarketCount": 0,
+  "runCount": 1,
+  "runs": [
+    {
+      "filename": "early-bird-btc-updown-5m-1778891400.log",
+      "slug": "btc-updown-5m-1778891400",
+      "asset": "BTC",
+      "duration": "5m",
+      "strategy": "simulation",
+      "startTime": 1778891358364,
+      "endTime": 1778891700000,
+      "outcome": "win",
+      "pnl": 1.05,
+      "spend": 2.45,
+      "orderEvents": [
+        {
+          "ts": 1778891358994,
+          "type": "order",
+          "action": "buy",
+          "side": "UP",
+          "price": 0.49,
+          "shares": 5,
+          "status": "placed"
+        },
+        {
+          "ts": 1778891363007,
+          "type": "order",
+          "action": "buy",
+          "side": "UP",
+          "price": 0.49,
+          "shares": 5,
+          "status": "filled"
+        },
+        {
+          "ts": 1778891363174,
+          "type": "order",
+          "action": "sell",
+          "side": "UP",
+          "price": 0.7,
+          "shares": 5,
+          "status": "placed"
+        },
+        {
+          "ts": 1778891662893,
+          "type": "order",
+          "action": "sell",
+          "side": "UP",
+          "price": 0.7,
+          "shares": 5,
+          "status": "filled"
+        }
+      ],
+      "orderHistory": [
+        {
+          "action": "buy",
+          "price": 0.49,
+          "shares": 5,
+          "fee": 0,
+          "tokenId": "33668917278847077467566520316820322033334169093993813366118063635774752621739"
+        },
+        {
+          "action": "sell",
+          "price": 0.7,
+          "shares": 5,
+          "fee": 0,
+          "tokenId": "33668917278847077467566520316820322033334169093993813366118063635774752621739"
+        }
+      ],
+      "snapshotCount": 308,
+      "tickerCount": 308,
+      "firstPriceToBeat": 79145.04886,
+      "lastPriceToBeat": 79136.21497112869,
+      "firstGap": -8.94,
+      "lastGap": 28.71,
+      "firstAssetPrice": 79140.05253650896,
+      "lastAssetPrice": 79164.92936289773,
+      "logPath": "C:\\Users\\Yasser\\Documents\\trade\\Polymarket-Deck-Lab\\repos\\polymarket-trade-engine\\logs\\early-bird-btc-updown-5m-1778891400.log",
+      "chartPath": "C:\\Users\\Yasser\\Documents\\trade\\Polymarket-Deck-Lab\\repos\\polymarket-trade-engine\\logs\\early-bird-btc-updown-5m-1778891400.html",
+      "stateSource": "matched",
+      "logHasResolution": false
+    }
+  ],
+  "warnings": [
+    "btc-updown-5m-1778891400: PnL found in state but no resolution entry found in structured log"
+  ]
+}
