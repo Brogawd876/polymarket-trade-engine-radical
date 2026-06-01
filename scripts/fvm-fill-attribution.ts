@@ -1,7 +1,7 @@
 /**
  * FVM Fill Profit Attribution Extractor
  *
- * Runs fvm-v1.1.0-raw-ungated across the full paired corpus and computes
+ * Runs an FVM variant across a paired corpus and computes
  * true per-fill settlement PnL using the binary contract payoff formula:
  *
  *   buy UP:   pnl = shares × ((settledUp ? 1 : 0) – fillPrice)
@@ -12,7 +12,7 @@
  *
  * Outputs: data/reports/fvm-fill-profit-attribution.jsonl
  * Usage:
- *   npx tsx scripts/fvm-fill-attribution.ts [--pairs-dir data/pairs] [--out-jsonl <path>] [--balance 50]
+ *   bun scripts/fvm-fill-attribution.ts [--pairs-dir data/pairs] [--out-jsonl <path>] [--balance 50] [--variant fvm-v1.1.0-raw-ungated] [--limit 12]
  */
 
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from "fs";
@@ -148,11 +148,18 @@ async function main() {
   let pairsDir = "data/pairs";
   let outJsonl = "data/reports/fvm-fill-profit-attribution.jsonl";
   let balance = 50;
+  let variant = "fvm-v1.1.0-raw-ungated";
+  let limit: number | null = null;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--pairs-dir") pairsDir = args[++i] || pairsDir;
     else if (args[i] === "--out-jsonl") outJsonl = args[++i] || outJsonl;
     else if (args[i] === "--balance") balance = parseFloat(args[++i] || String(balance));
+    else if (args[i] === "--variant") variant = args[++i] || variant;
+    else if (args[i] === "--limit") {
+      const parsed = parseInt(args[++i] || "", 10);
+      limit = Number.isFinite(parsed) && parsed > 0 ? parsed : limit;
+    }
   }
 
   if (!existsSync(pairsDir)) {
@@ -161,7 +168,7 @@ async function main() {
   }
 
   // Load valid pair manifests
-  const files = readdirSync(pairsDir).filter(f => f.endsWith(".pair.json"));
+  const files = readdirSync(pairsDir).filter(f => f.endsWith(".pair.json")).sort();
   const validManifests: PairManifest[] = [];
   for (const file of files) {
     try {
@@ -170,12 +177,15 @@ async function main() {
     } catch { /* skip malformed */ }
   }
 
-  console.log(`Loaded ${validManifests.length} valid pair manifests.`);
+  if (limit !== null) {
+    validManifests.splice(limit);
+  }
+
+  console.log(`Loaded ${validManifests.length} valid pair manifests for ${variant}.`);
   if (validManifests.length === 0) { console.log("Nothing to process."); process.exit(0); }
 
   process.env.WALLET_BALANCE = String(balance);
 
-  const VARIANT = "fvm-v1.1.0-raw-ungated";
   const BATCH_SIZE = 25;  // 25 files × 1 variant = 25 runs, well under 50-cap
   const allRecords: FillAttributionRecord[] = [];
 
@@ -194,7 +204,7 @@ async function main() {
     console.log(`\n[Attribution] Batch ${ci + 1}/${chunks.length}: ${chunk.length} pairs...`);
 
     let batch = await manager.createBatch({
-      variants: [VARIANT],
+      variants: [variant],
       files: replayFiles,
       l2Files,
       continuousBankroll: false,

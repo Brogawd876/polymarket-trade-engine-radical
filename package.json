@@ -10,6 +10,7 @@
     "verify": "bun run check && bun test --max-concurrency=1 && cd ui && bun run lint && bunx vitest run && bun run build",
     "calibrate": "bun scripts/run-corpus-calibration-pipeline.ts",
     "calibrate:verify": "bun scripts/run-calibration-verification-pipeline.ts",
+    "mutation-lab:fvm": "bun scripts/run-fvm-mutation-lab.ts",
     "wallet": "bun run scripts/wallet.ts"
   },
   "devDependencies": {
