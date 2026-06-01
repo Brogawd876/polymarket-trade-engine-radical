@@ -1,7 +1,7 @@
 # ACTIVE_TASK
 
 ## Current Task
-Close repair branch and prepare next validation phase.
+Close repair branch, clean the workspace for Codex/Antigravity/Gemini CLI, merge useful work, and prepare the next profitability-validation phase.
 
 ## Phase 5C Closeout Actions
 - [x] Pre-validation of fixture files in corpus runner (resolved stalls due to invalid/pre-market fixtures).
@@ -10,11 +10,20 @@ Close repair branch and prepare next validation phase.
 - [x] Archived stale or corrupted lineage reports under `AI_WORKSPACE/archive/`.
 - [x] Stage and commit final Phase 5C lineage evidence harness & workspace docs.
 - [/] Update workspace tracking files (`CURRENT_STATE.md`, `ACTIVE_TASK.md`, `DECISIONS.md`, `HANDOFF.md`).
-- [ ] Run final verification checking suite (`bun run check`, `bun test`, and UI linting/testing/building).
-- [ ] Generate comprehensive 10-section closeout report and recommend definitive branch action.
+- [x] Run final verification checking suite (`bun run check`, `bun test`, and UI linting/testing/building).
+- [x] Archive root-level one-off repair scratch files under `AI_WORKSPACE/archive/repair-scratch-2026-06-01/`.
+- [x] Add shared multi-agent orientation files (`AGENTS.md`, `GEMINI.md`).
+- [/] Merge cleaned repair work into `master`.
+- [ ] Generate concise closeout report and recommend definitive branch action.
 
 ## Forbidden Next Work (Blocked in this Phase)
 - No new FVM formula changes, strategy variants, or calibrations.
 - No post-only order handling or adverse-selection shields.
 - No UI enhancements, layout changes, or cockpits.
 - No paper/live trading integration or replay timing optimizations.
+
+## Next Profitability Phase
+- Export missing risk and quality metrics.
+- Run continuous-bankroll validation.
+- Compare `fvm-v1.1.0-raw-ungated` against Avellaneda/momentum/calibrated candidates on broad same-sample and holdout evidence.
+- Promote nothing until PnL, drawdown, fill realism, adverse selection, and trade count all survive conservative review.
