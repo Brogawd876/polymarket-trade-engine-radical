@@ -2,50 +2,37 @@
 
 ## Repository State
 * **Current Branch**: `radical-checkpoint-may31`
-* **Commit Hash**: `a178b1129fc413bb9057b48521f7a9028d5388d3`
+* **Commit Hash**: `8bf6f53e6f9dc8e75dc8e367858c4f74d0a6c0ea`
 
-## Phase 3 Completion State
-* **Config/Auth**: `POLYGON_RPC_URL` and `POLY_API_KEY_NONCE` validated in production. `CHAINLINK_BTC_5M_REFERENCE_VERIFIED` is strictly required in production but bypassed in simulation.
-* **Risk Gates**: `AggregatedRiskGate` fail-closed in production regardless of `BLOCK_ON_PREDICTIVE_DISAGREEMENT`. In simulation, bypass is allowed. Telemetry divergence logged.
-* **Tests**: All backend (513) and UI (20) tests are passing. `bun version` pinned safely to `1.3.14`.
+## Phase 5 Completion State (Repair & Reconciliation Complete)
+* **Status**: Repair/Reconciliation phase complete
+* **Current Canonical Runtime Spine**: `SessionManager` → `EngineRuntime` → `MarketSpawner` → `MarketLifecycle` → `Strategy`/`RiskGate`/`Client`/`UserChannel`
+* **Current Benchmark Strategy**: `fvm-v1.1.0-raw-ungated`
+* **Deployment Status**: Not ready
+* **Profitability Status**: Not proven
+* **Reason**: All FVM variants were negative in replay. FVM v1.1.0 Raw/Ungated is restored as the benchmark/champion candidate, returning a net PnL of `-$380.10` over the same-sample replay corpus. Institutional/newer variants returned worse results (`-$726.82` for `fair-value-maker`), caused in large part by excessive blocked decisions.
+* **Next Required Work**: Missing metric export (drawdown, capital utilization, settlement PnL, missed fills, good/bad blocks, and richer markout/block quality analysis) and continuous-bankroll validation.
+* **Forbidden Next Work**: No more broad refactors, strategy tuning, or speculative feature additions (e.g., post-only changes, adverse-selection shields, isotonic calibration, FVM formula changes, or live/paper trading integrations) without hard, evidence-backed validation.
 
-## Runtime Architecture (Phase 4 Focus)
+## Phase 4 Completion State
+* **Truth Hierarchy**: Strict classification in `engine/types/market-truth.ts`. Inferred data is explicitly marked as `inferred_diagnostic`.
+* **MarketLifecycle Boundary**: `StrategyContext.orderFlow` is conditionally injected. Production forces `orderFlow: undefined` if it relies on inferred data (`allowInferredFlow=false`).
+* **SessionManager Default**: `SessionManager.startReplay` strictly defaults to `allowInferredFlow=false` (Production/Promotion mode) but supports explicitly overriding with `{ allowInferredFlow: true }` for research counterfactuals.
+* **Test Assurances**: `truth-hierarchy.test.ts` formally verifies the extraction and drop rules for inferred feeds.
+
+## Runtime Architecture (Post Phase 3C & 5)
 ### Actual Runtime Spine Diagram
-`index.ts` -> `SessionManager` -> `EarlyBird` (Legacy Orchestrator) -> `MarketLifecycle` -> `Strategy (e.g. FairValueMaker)`
+`SessionManager` → `EngineRuntime` → `MarketSpawner` → `MarketLifecycle` → `Strategy`/`RiskGate`/`Client`/`UserChannel`
 
 * `index.ts` handles CLI options and delegates to `SessionManager`.
-* `session-manager.ts` handles telemetry bus, and starts the `EarlyBird` instance in simulation or replay mode.
-* `early-bird.ts` currently owns initializing data adapters (Chainlink, Binance, Coinbase, TickerTracker), aggregators, lead-lag monitors, OrderBook, APIQueue, the Polymarket/Sim clients, and the `MarketLifecycle` manager per slot.
-* `market-lifecycle.ts` manages an individual market round, evaluating risk gates, polling `strategy`, and pushing orders to the client.
-* `bot-core/*` owns isolated infrastructure (data adapters, pure risk evaluation gates, aggregators).
-
-### Dependency Map for `early-bird.ts`
-**Imported by:**
-* `engine/session-manager.ts` (Instantiates and runs it)
-* `engine/strategy-lab.ts` (Uses it for backtests)
-* **Test Suites:** `early-bird.test.ts`, `aggregator-integration.test.ts`, `geoblock-integration.test.ts`, `lead-lag-integration.test.ts`, `replay-fixtures.test.ts`, `session-lifecycle.test.ts`, `telemetry-server.test.ts`.
-
-### Files Safe to Modify (for Extraction)
-* `engine/early-bird.ts` (Only to extract logic into other components without breaking the public interface).
-* `engine/bot-core/*` (To house extracted adapter logic).
-* `engine/session-manager.ts` (To take ownership of high-level initialization).
-
-### Files Not Safe to Delete
-* `engine/early-bird.ts` (Cannot be deleted until all 7 test suites and `session-manager.ts` are fully decoupled).
-
-### Migration Sequence
-1. **Extraction 1 (Completed):** Extracted `BotInfrastructure` and `InfrastructureFactory` into `bot-core/`. `EarlyBird` now delegates context initialization.
-2. **Extraction 2 (Completed):** Extracted `MarketSpawner` into `bot-core/`. `EarlyBird` now delegates lifecycle orchestration and tick intervals. (Shutdown semantics hardened).
-3. **Extraction 3 (Pending):** Update `SessionManager` to assemble the dependencies using `InfrastructureFactory` and pass them directly to `MarketSpawner`, bypassing `EarlyBird` for live/sim paths. 
-4. **Extraction 4 (Pending):** Refactor the 7 test suites to use the new `MarketSpawner` instead of `EarlyBird`.
-5. **Final Step (Pending):** Once no references remain, archive `early-bird.ts`.
-
-### Exact Tests Protecting Each Step
-* **Extraction 1:** Protected by `early-bird.test.ts` and `bot-core.test.ts`.
-* **Extraction 2:** Protected by `session-lifecycle.test.ts` and `aggregator-integration.test.ts`.
-* **Extraction 3 & 4:** Protected by all 513 backend tests (`bun test`).
+* `SessionManager` handles telemetry bus, and starts the `EngineRuntime` instance in live/sim/replay modes.
+* `EngineRuntime` canonically composes infrastructure initialization, clients, orchestrates ticks, and spins up `MarketSpawner`.
+* `MarketSpawner` owns market/slot spawning only.
+* `EarlyBird` remains only as a legacy compatibility wrapper for external orchestrators and is NOT the canonical runtime.
+* `MarketLifecycle` manages an individual market round, evaluating risk gates, polling `strategy`, and pushing orders to the client.
 
 ## Invariants (Do Not Change Without Evidence)
 * Do not bypass risk gates in production.
 * Do not delete `engine/early-bird.ts` until dependency mapping proves it is no longer needed.
-* Do not replace `fair-value-maker.ts` as the live benchmark.
+* Do not replace `fvm-v1.1.0-raw-ungated` as the live benchmark.
+* **FVM behavior must not be changed blindly.**

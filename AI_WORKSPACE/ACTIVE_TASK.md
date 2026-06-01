@@ -1,24 +1,20 @@
 # ACTIVE_TASK
 
 ## Current Task
-Execute the repair of the `polymarket-trade-engine-radical` branch according to the revised implementation plan.
+Close repair branch and prepare next validation phase.
 
-## Phase 3 Completion
-- [x] Unify `.env.sample` and `setup_env.py` (added missing values).
-- [x] Hardened `engine/client.ts` to strictly block missing `POLYGON_RPC_URL` and `CHAINLINK_BTC_5M_REFERENCE_VERIFIED` in production.
-- [x] Repaired exact string test expectations to account for divergence telemetry in risk-gate block reasons.
-- [x] Verified fail-closed risk gate behavior regardless of `BLOCK_ON_PREDICTIVE_DISAGREEMENT` flag in production environments.
-- [x] Pinned `bun-version: 1.3.14` in `.github/workflows/test.yml` safely.
+## Phase 5C Closeout Actions
+- [x] Pre-validation of fixture files in corpus runner (resolved stalls due to invalid/pre-market fixtures).
+- [x] 100% complete same-sample FVM lineage comparison run (995 total runs, 0 missing).
+- [x] Verified FVM lineage comparison results (FVM v1.1.0 Raw/Ungated confirmed as benchmark, newer variants negative).
+- [x] Archived stale or corrupted lineage reports under `AI_WORKSPACE/archive/`.
+- [x] Stage and commit final Phase 5C lineage evidence harness & workspace docs.
+- [/] Update workspace tracking files (`CURRENT_STATE.md`, `ACTIVE_TASK.md`, `DECISIONS.md`, `HANDOFF.md`).
+- [ ] Run final verification checking suite (`bun run check`, `bun test`, and UI linting/testing/building).
+- [ ] Generate comprehensive 10-section closeout report and recommend definitive branch action.
 
-## Immediate Next Steps (Phase 4: Canonicalize Runtime Spine)
-- [x] **Extraction 1:** Extracted `BotInfrastructure` and `InfrastructureFactory` into `bot-core/`.
-- [x] **Extraction 2:** Extracted `MarketSpawner` into `bot-core/`. Fixed orchestration bugs in shutdown loop with rigorous tests.
-3. **Extraction 3:** Update `SessionManager` to assemble the dependencies using `InfrastructureFactory` and pass them directly to `MarketSpawner`.
-4. **Extraction 4:** Refactor the 7 test suites to use the new `MarketSpawner` instead of `EarlyBird`.
-5. Run `bun run verify`.
-6. Stop and report findings.
-
-## Success Criteria
-- `early-bird.ts` slims down without breaking any existing dependent tests.
-- FVM remains the intact champion strategy.
-- No massive file deletions occur until tests natively use the new runtime spine.
+## Forbidden Next Work (Blocked in this Phase)
+- No new FVM formula changes, strategy variants, or calibrations.
+- No post-only order handling or adverse-selection shields.
+- No UI enhancements, layout changes, or cockpits.
+- No paper/live trading integration or replay timing optimizations.
