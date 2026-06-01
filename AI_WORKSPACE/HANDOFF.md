@@ -50,4 +50,4 @@ cd ui && bun run lint && bunx vitest run && bun run build && cd ..
 `Metric export + continuous-bankroll validation for FVM v1.1.0 Raw/Ungated.`
 
 ## Branch Action
-Merge the cleaned `radical-checkpoint-may31` repair branch into `master`. The repaired runtime and evidence harness are more valuable than the stale branch split. Do not treat the merge as a profitability endorsement; it is a workspace consolidation so future work can focus on measured edge.
+The cleaned `radical-checkpoint-may31` repair branch was fast-forward merged into `master`. The repaired runtime and evidence harness are more valuable than the stale branch split. Do not treat the merge as a profitability endorsement; it is a workspace consolidation so future work can focus on measured edge.

@@ -1,8 +1,8 @@
 # CURRENT_STATE
 
 ## Repository State
-* **Current Branch**: `radical-checkpoint-may31`
-* **Commit Hash**: `eda99047f22a111f78c7f9f68ad70031865d6965` before workspace cleanup commit
+* **Current Branch**: `master`
+* **Commit Hash**: `7c3cbf609a0fe7a9ffaf5843f87b92a5f435d8a1` after fast-forward merge from `radical-checkpoint-may31`
 
 ## Phase 5 Completion State (Repair & Reconciliation Complete)
 * **Status**: Repair/Reconciliation phase complete
@@ -12,7 +12,7 @@
 * **Profitability Status**: Not proven
 * **Reason**: All FVM variants were negative in replay. FVM v1.1.0 Raw/Ungated is restored as the benchmark/champion candidate, returning a net PnL of `-$380.10` over the same-sample replay corpus. Institutional/newer variants returned worse results (`-$726.82` for `fair-value-maker`), caused in large part by excessive blocked decisions.
 * **Next Required Work**: Missing metric export (drawdown, capital utilization, settlement PnL, missed fills, good/bad blocks, and richer markout/block quality analysis) and continuous-bankroll validation.
-* **Workspace Cleanup Direction**: Merge repaired runtime/evidence work into `master`, archive one-off repair scratch files, and keep the next phase focused on profitability evidence rather than further architecture churn.
+* **Workspace Cleanup Direction**: Repaired runtime/evidence work has been fast-forward merged into `master`; one-off repair scratch files are archived; the next phase should stay focused on profitability evidence rather than further architecture churn.
 * **Forbidden Next Work**: No more broad refactors, strategy tuning, or speculative feature additions (e.g., post-only changes, adverse-selection shields, isotonic calibration, FVM formula changes, or live/paper trading integrations) without hard, evidence-backed validation.
 
 ## Phase 4 Completion State

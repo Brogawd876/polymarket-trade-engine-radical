@@ -13,8 +13,8 @@ Close repair branch, clean the workspace for Codex/Antigravity/Gemini CLI, merge
 - [x] Run final verification checking suite (`bun run check`, `bun test`, and UI linting/testing/building).
 - [x] Archive root-level one-off repair scratch files under `AI_WORKSPACE/archive/repair-scratch-2026-06-01/`.
 - [x] Add shared multi-agent orientation files (`AGENTS.md`, `GEMINI.md`).
-- [/] Merge cleaned repair work into `master`.
-- [ ] Generate concise closeout report and recommend definitive branch action.
+- [x] Merge cleaned repair work into `master`.
+- [x] Generate concise closeout report and recommend definitive branch action.
 
 ## Forbidden Next Work (Blocked in this Phase)
 - No new FVM formula changes, strategy variants, or calibrations.
