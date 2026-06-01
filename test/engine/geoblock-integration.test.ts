@@ -63,7 +63,7 @@ describe("Engine-Level Geoblock Shutdown", () => {
     };
     
     (bot as any)._spawner.injectRecoveredLifecycle("test-slug", mockLifecycle);
-    const shutdownSpy = spyOn(bot as any, "_startShutdown");
+    const shutdownSpy = spyOn((bot as any)._runtimeInstance as any, "_startShutdown");
 
     // tickOnce should not throw TerminalAccessError
     await (bot as any).tickOnce();
