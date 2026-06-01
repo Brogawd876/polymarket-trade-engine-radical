@@ -1,12 +1,16 @@
-import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from "fs";
+import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
 import * as path from "path";
 import { type PairManifest } from "../engine/replay/pair-manifest.ts";
-import { StrategyLabBatchManager, type StrategyLabBatch, type StrategyLabVariantSummary } from "../engine/strategy-lab.ts";
+import { StrategyLabBatchManager, type StrategyLabBatch, type StrategyLabVariantSummary, type StrategyLabRunResult, summarizeByStrategy } from "../engine/strategy-lab.ts";
+import { resolveStrategySelection } from "../engine/strategy/index.ts";
 import { extractCalibrationRecords } from "../engine/replay/calibration-extractor.ts";
+import { createHash } from "crypto";
+import { execSync } from "child_process";
+import { validateReplayFixture } from "../engine/server/helpers/replay-fixtures.ts";
 
 import { shouldTimeout } from "./paired-corpus-utils.ts";
 
-const MAX_BATCH_RUNS = 50;
+const MAX_BATCH_RUNS = 1500;
 
 function chunk<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -125,6 +129,12 @@ async function main() {
   let outCalibrationJsonl = "";
   const directPairs: string[] = [];
 
+  // Phase 5C checkpoint & retry flags
+  let checkpointJsonl = "";
+  let completenessJson = "";
+  let retryMode = false;
+  let forceMode = false;
+
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--pairs") pairsDir = args[++i] || pairsDir;
     else if (args[i] === "--pairs-dir") pairsDir = args[++i] || pairsDir;
@@ -133,6 +143,10 @@ async function main() {
     else if (args[i] === "--allow-partial") allowPartial = true;
     else if (args[i] === "--out-json") outJson = args[++i] || outJson;
     else if (args[i] === "--out-calibration-jsonl") outCalibrationJsonl = args[++i] || outCalibrationJsonl;
+    else if (args[i] === "--checkpoint-jsonl") checkpointJsonl = args[++i] || checkpointJsonl;
+    else if (args[i] === "--completeness-json") completenessJson = args[++i] || completenessJson;
+    else if (args[i] === "--retry") retryMode = true;
+    else if (args[i] === "--force") forceMode = true;
     else if (args[i] === "--variants") {
       variants = [];
       while (i + 1 < args.length && !args[i + 1]!.startsWith("--")) {
@@ -141,7 +155,26 @@ async function main() {
     }
   }
 
-  if (!existsSync(pairsDir)) {
+  // Preserve and archive the old corrupted report if it exists in the root directory
+  const oldReportPath = "fvm-lineage-report.json";
+  const archiveDir = "AI_WORKSPACE/archive";
+  const archivePath = path.join(archiveDir, "fvm-lineage-report.corrupted-or-partial.json");
+  if (existsSync(oldReportPath)) {
+    if (!existsSync(archiveDir)) {
+      mkdirSync(archiveDir, { recursive: true });
+    }
+    if (!existsSync(archivePath)) {
+      try {
+        const oldContent = readFileSync(oldReportPath, "utf-8");
+        writeFileSync(archivePath, oldContent, "utf-8");
+        console.log(`\n[Archive] Archived old corrupted lineage report to ${archivePath}`);
+      } catch (err) {
+        console.error("Failed to archive old report:", err);
+      }
+    }
+  }
+
+  if (!existsSync(pairsDir) && directPairs.length === 0) {
     console.error(`Pairs directory not found: ${pairsDir}`);
     process.exit(1);
   }
@@ -159,8 +192,15 @@ async function main() {
         const manifest = JSON.parse(content) as PairManifest;
         allManifests.set(manifest.slug, manifest);
         if (manifest.pairValidity === "valid") {
-          validManifests.push(manifest);
-          validCount++;
+          // Verify that the replay fixture is valid and replayable
+          const meta = await validateReplayFixture(manifest.replayLogPath);
+          if (meta.replayable) {
+            validManifests.push(manifest);
+            validCount++;
+          } else {
+            console.log(`[Validation] Skipping non-replayable fixture in ${manifest.slug}: ${meta.reason}`);
+            invalidCount++;
+          }
         } else {
           invalidCount++;
         }
@@ -177,8 +217,14 @@ async function main() {
       const manifest = JSON.parse(content) as PairManifest;
       allManifests.set(manifest.slug, manifest);
       if (manifest.pairValidity === "valid" && !validManifests.some(m => m.slug === manifest.slug)) {
-        validManifests.push(manifest);
-        validCount++;
+        const meta = await validateReplayFixture(manifest.replayLogPath);
+        if (meta.replayable) {
+          validManifests.push(manifest);
+          validCount++;
+        } else {
+          console.log(`[Validation] Skipping non-replayable direct fixture in ${manifest.slug}: ${meta.reason}`);
+          invalidCount++;
+        }
       } else if (manifest.pairValidity !== "valid") {
         invalidCount++;
       }
@@ -195,6 +241,137 @@ async function main() {
   const replayFiles = validManifests.map(m => m.replayLogPath);
   const l2Files = Object.fromEntries(validManifests.map(m => [m.replayLogPath, m.rawL2LogPath]));
 
+  // gitCommit provider
+  function getGitCommit(): string {
+    try {
+      return execSync("git rev-parse HEAD", { encoding: "utf-8" }).trim();
+    } catch {
+      return "local";
+    }
+  }
+
+  const currentCommit = getGitCommit();
+  const variantConfigHashes: Record<string, string> = {};
+  for (const v of variants) {
+    try {
+      const resolved = resolveStrategySelection(v);
+      const config = resolved.config;
+      const sortedStr = JSON.stringify(config, Object.keys(config).sort());
+      const hash = createHash("sha256").update(sortedStr).digest("hex").slice(0, 16);
+      variantConfigHashes[v] = hash;
+    } catch (e) {
+      variantConfigHashes[v] = "unknown";
+    }
+  }
+
+  // Load existing checkpoints and perform safety matching check
+  const existingMap = new Map<string, any>();
+  let skippedOnResume = 0;
+  let stalledFailedClassified = 0;
+
+  if (checkpointJsonl && existsSync(checkpointJsonl)) {
+    console.log(`Loading existing checkpoint from ${checkpointJsonl}...`);
+    const content = readFileSync(checkpointJsonl, "utf-8");
+    const lines = content.split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const row = JSON.parse(line);
+      const key = `${row.variant}-${row.pairId}`;
+
+      if (!forceMode) {
+        if (row.gitCommit !== currentCommit) {
+          throw new Error(`Git commit mismatch in checkpoint row for ${key}: expected ${currentCommit}, found ${row.gitCommit}. Use --force to override.`);
+        }
+        if (row.allowInferredFlow !== false) {
+          throw new Error(`allowInferredFlow mismatch in checkpoint row for ${key}: expected false, found ${row.allowInferredFlow}. Use --force to override.`);
+        }
+        if (row.fillModel !== "conservative") {
+          throw new Error(`fillModel mismatch in checkpoint row for ${key}: expected conservative, found ${row.fillModel}. Use --force to override.`);
+        }
+        const expectedHash = variantConfigHashes[row.variant];
+        if (expectedHash && row.strategyConfigHash !== expectedHash) {
+          throw new Error(`Config hash mismatch for variant ${row.variant} in checkpoint row: expected ${expectedHash}, found ${row.strategyConfigHash}. Use --force to override.`);
+        }
+      }
+      existingMap.set(key, row);
+    }
+    console.log(`Loaded ${existingMap.size} existing rows from checkpoint.`);
+  }
+
+  // checker callback for batch run
+  const shouldSkipRun = (variant: string, file: string): boolean => {
+    const match = file.match(/-([a-f0-9]{32})\.log$/);
+    const slug = match ? match[1]! : "";
+    const manifest = validManifests.find(m => m.replayLogPath === file);
+    const pairId = manifest ? manifest.slug : slug;
+
+    const key = `${variant}-${pairId}`;
+    const row = existingMap.get(key);
+    if (!row) {
+      return false;
+    }
+
+    if (row.status === "completed") {
+      skippedOnResume++;
+      return true;
+    }
+
+    if (row.status === "stalled" || row.status === "failed") {
+      if (retryMode) {
+        stalledFailedClassified++;
+        return false; // rerun
+      } else {
+        skippedOnResume++;
+        return true; // skip
+      }
+    }
+
+    return false;
+  };
+
+  const onRunComplete = (run: StrategyLabRunResult) => {
+    if (!checkpointJsonl) return;
+
+    const manifest = validManifests.find(m => m.replayLogPath === run.file);
+    const pairId = manifest ? manifest.slug : (run.slug || "unknown");
+    const key = `${run.strategy}-${pairId}`;
+    const previousAttempt = existingMap.get(key);
+
+    const retryCount = previousAttempt ? (previousAttempt.retryCount || 0) + 1 : 0;
+    const previousStatus = previousAttempt ? previousAttempt.status : undefined;
+
+    const status = run.status === "completed" ? "completed" : (run.error === "Replay stalled" ? "stalled" : "failed");
+    const errorType = status === "stalled" ? "STALL" : (status === "failed" ? "FAILURE" : undefined);
+
+    const row = {
+      gitCommit: currentCommit,
+      variant: run.strategy,
+      pairId,
+      replayFile: run.file,
+      strategyConfigHash: variantConfigHashes[run.strategy] || "unknown",
+      allowInferredFlow: false,
+      fillModel: "conservative",
+      startedAt: run.startedAt || new Date().toISOString(),
+      finishedAt: run.finishedAt || new Date().toISOString(),
+      status,
+      errorType,
+      errorMessage: run.error,
+      retryCount,
+      previousStatus,
+      metrics: run,
+    };
+
+    try {
+      const parentDir = path.dirname(checkpointJsonl);
+      if (parentDir && parentDir !== "." && !existsSync(parentDir)) {
+        mkdirSync(parentDir, { recursive: true });
+      }
+      appendFileSync(checkpointJsonl, JSON.stringify(row) + "\n", "utf-8");
+    } catch (err) {
+      console.error("Failed to append checkpoint row:", err);
+    }
+  };
+
   console.log(`Running Strategy Lab on ${validManifests.length} valid pairs for variants: ${variants.join(", ")}`);
   
   const manager = new StrategyLabBatchManager();
@@ -203,8 +380,6 @@ async function main() {
   const batches: StrategyLabBatch[] = [];
   let finalExitCode = 0;
   let finalStatus = "completed";
-  let timedOut = false;
-  let internalMismatch = false;
 
   for (let i = 0; i < fileChunks.length; i++) {
     const files = fileChunks[i]!;
@@ -215,74 +390,107 @@ async function main() {
       variants,
       files,
       l2Files: batchL2Files,
+      quiet: true,
+      onRunComplete,
+      shouldSkipRun,
     });
 
     const startMs = Date.now();
-    let batchTimedOut = false;
-    let batchInternalMismatch = false;
+    let lastCompletedCount = 0;
+    let lastProgressTimeMs = Date.now();
+    let lastHeartbeatTimeMs = Date.now();
 
     while (batch.state === "queued" || batch.state === "running") {
-      if (shouldTimeout(startMs, timeoutMs)) {
-        batchTimedOut = true;
-        if (batch.progress.completedRuns === batch.progress.totalRuns && batch.progress.totalRuns > 0 && batch.state === "running") {
-          batchInternalMismatch = true;
-        }
-        manager.cancelBatch(batch.id);
-        batch = manager.getBatch(batch.id) ?? batch;
-        break;
-      }
       await new Promise(r => setTimeout(r, 1000));
       batch = manager.getBatch(batch.id) ?? batch;
+
+      const now = Date.now();
+
+      if (batch.progress.completedRuns > lastCompletedCount) {
+        lastCompletedCount = batch.progress.completedRuns;
+        lastProgressTimeMs = now;
+      }
+
+      // 15 minutes soft watchdog progress warning
+      if (now - lastProgressTimeMs > 15 * 60 * 1000) {
+        console.warn(`\n[Watchdog] Warning: Batch appears to be stuck. No progress for 15m.`);
+        lastProgressTimeMs = now;
+      }
+
+      // Heartbeat logging every minute
+      if (now - lastHeartbeatTimeMs >= 60 * 1000) {
+        lastHeartbeatTimeMs = now;
+        const elapsedSec = Math.floor((now - startMs) / 1000);
+        const elapsedStr = `${Math.floor(elapsedSec / 60)}m${elapsedSec % 60}s`;
+
+        let estRemainingStr = "estimating...";
+        if (batch.progress.completedRuns > 0) {
+          const secPerRun = elapsedSec / batch.progress.completedRuns;
+          const remainingRuns = batch.progress.totalRuns - batch.progress.completedRuns;
+          const remainingSec = Math.floor(secPerRun * remainingRuns);
+          estRemainingStr = `${Math.floor(remainingSec / 60)}m${remainingSec % 60}s`;
+        }
+
+        const runningRun = batch.runs.find(r => r.status === "running");
+        const runningEnv = runningRun ? runningRun.slug : "idle";
+        const runningVariant = runningRun ? runningRun.strategy : "idle";
+
+        console.log(`\n[Strategy Lab] batch ${i + 1}: ${batch.progress.completedRuns} / ${batch.progress.totalRuns} runs completed... variants: ${runningVariant}, env: ${runningEnv}... elapsed: ${elapsedStr}, est. remaining: ${estRemainingStr}`);
+      }
+
       process.stdout.write(`\r[Strategy Lab] batch ${i + 1}: ${batch.progress.completedRuns} / ${batch.progress.totalRuns} runs completed...`);
     }
 
     batches.push(batch);
 
-    if (batchTimedOut) {
-      timedOut = true;
-      if (batchInternalMismatch) {
-        internalMismatch = true;
-        console.log(`\n\n[ERROR] Strategy Lab Batch internal state mismatch! Completed ${batch.progress.totalRuns} runs but hung in running state.`);
-        finalStatus = "internal_state_mismatch";
-        finalExitCode = 1;
-      } else {
-        console.log(`\n\n[ERROR] Strategy Lab Batch Timed Out!`);
-        console.log(`Completed runs: ${batch.progress.completedRuns} / ${batch.progress.totalRuns}`);
-        console.log(`Status: timed_out`);
-        finalStatus = "timed_out";
-        if (!allowPartial) finalExitCode = 1;
-      }
+    console.log(`\n\nStrategy Lab Batch ${i + 1} Completed. State: ${batch.state}`);
+    if (batch.state === "failed") {
+      finalStatus = "failed";
+      finalExitCode = 1;
       if (!allowPartial) break;
-    } else {
-      console.log(`\n\nStrategy Lab Batch ${i + 1} Completed. State: ${batch.state}`);
-      if (batch.state === "failed") {
-        finalStatus = "failed";
-        finalExitCode = 1;
-        if (!allowPartial) break;
-      }
     }
   }
 
-  if (!timedOut && !internalMismatch) {
-    console.log(`\n\nStrategy Lab Batch Completed. State: ${finalStatus}`);
+  // Aggregate results solely from checkpoint file
+  let finalRuns: StrategyLabRunResult[] = [];
+  if (checkpointJsonl && existsSync(checkpointJsonl)) {
+    console.log(`\nReconstructing aggregate results from checkpoint rows...`);
+    const content = readFileSync(checkpointJsonl, "utf-8");
+    const lines = content.split("\n");
+    const latestRows = new Map<string, any>();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const row = JSON.parse(line);
+      latestRows.set(`${row.variant}-${row.pairId}`, row);
+    }
+
+    for (const row of latestRows.values()) {
+      if (row.metrics) {
+        const runResult = row.metrics as StrategyLabRunResult;
+        runResult.status = row.status === "completed" ? "completed" : "failed";
+        runResult.error = row.errorMessage;
+        finalRuns.push(runResult);
+      }
+    }
+    console.log(`Reconstructed ${finalRuns.length} total runs from checkpoint file.`);
+  } else {
+    finalRuns = batches.flatMap((batch) => batch.runs);
   }
 
-  const allRuns = batches.flatMap((batch) => batch.runs);
-  const byStrategy = combineVariantSummaries(batches.flatMap((batch) => batch.summary.byStrategy));
-  const totalRuns = batches.reduce((acc, batch) => acc + batch.summary.totalRuns, 0);
-  const completedRuns = batches.reduce((acc, batch) => acc + batch.summary.completed, 0);
-  const failedRuns = batches.reduce((acc, batch) => acc + batch.summary.failed, 0);
-  const canceledRuns = batches.reduce((acc, batch) => acc + batch.summary.canceled, 0);
-  const totalPnl = batches.reduce((acc, batch) => acc + batch.summary.totalPnl, 0);
-  const wins = allRuns.filter((run) => run.verdict === "win").length;
-  const losses = allRuns.filter((run) => run.verdict === "loss").length;
-  const runPnls = allRuns.flatMap((run) => typeof run.pnl === "number" ? [run.pnl] : []);
+  const byStrategy = summarizeByStrategy(finalRuns);
+  const totalRuns = finalRuns.length;
+  const completedRuns = finalRuns.filter(r => r.status === "completed").length;
+  const failedRuns = finalRuns.filter(r => r.status === "failed").length;
+  const canceledRuns = finalRuns.filter(r => r.status === "canceled").length;
+  const totalPnl = finalRuns.reduce((acc, r) => acc + (r.pnl || 0), 0);
+  const wins = finalRuns.filter((run) => run.verdict === "win").length;
+  const losses = finalRuns.filter((run) => run.verdict === "loss").length;
+
   const combinedBatch = {
-    ...batches[0]!,
     id: "combined",
     state: finalStatus === "completed" ? "completed" : "failed",
     progress: { totalRuns, completedRuns },
-    runs: allRuns,
+    runs: finalRuns,
     summary: {
       totalRuns,
       completed: completedRuns,
@@ -291,15 +499,15 @@ async function main() {
       winRate: wins + losses > 0 ? wins / (wins + losses) : null,
       totalPnl,
       avgPnl: completedRuns > 0 ? totalPnl / completedRuns : null,
-      bestPnl: runPnls.length > 0 ? Math.max(...runPnls) : null,
-      worstPnl: runPnls.length > 0 ? Math.min(...runPnls) : null,
-      blocked: allRuns.reduce((acc, run) => acc + run.counts.blocked, 0),
-      problems: allRuns.reduce((acc, run) => acc + run.counts.problems, 0),
+      bestPnl: finalRuns.flatMap(r => typeof r.pnl === "number" ? [r.pnl] : []).length > 0 ? Math.max(...finalRuns.flatMap(r => typeof r.pnl === "number" ? [r.pnl] : [])) : null,
+      worstPnl: finalRuns.flatMap(r => typeof r.pnl === "number" ? [r.pnl] : []).length > 0 ? Math.min(...finalRuns.flatMap(r => typeof r.pnl === "number" ? [r.pnl] : [])) : null,
+      blocked: finalRuns.reduce((acc, run) => acc + run.counts.blocked, 0),
+      problems: finalRuns.reduce((acc, run) => acc + run.counts.problems, 0),
       byStrategy,
       recommendation: null,
     },
-  } as StrategyLabBatch;
-  
+  } as any;
+
   console.log(`\n--- Corpus Summary ---`);
   console.log(`Loaded ${allManifests.size} total pair manifests.`);
   console.log(`Valid Pairs: ${validCount}`);
@@ -321,6 +529,26 @@ async function main() {
     console.log(`    Insufficient Data: ${vSummary.conservativeFill.unknownInsufficientDataCount}`);
     console.log(`    Markout 5s Avg: ${vSummary.conservativeFill.avgMarkout5s ?? "N/A"}`);
     console.log(`    Adverse Selection Rate: ${vSummary.conservativeFill.adverseSelectionRate ? (vSummary.conservativeFill.adverseSelectionRate * 100).toFixed(1) + "%" : "N/A"}`);
+    console.log(`  Missing Metrics (Honest Reporting):`);
+    console.log(`    drawdown: not exported by StrategyLabVariantSummary; likely requires extension in engine/strategy-lab.ts`);
+    console.log(`    capitalUtilization: not exported by StrategyLabVariantSummary; likely requires extension in engine/strategy-lab.ts`);
+    console.log(`    settlementPnL: not exported by StrategyLabVariantSummary; likely requires extension in engine/strategy-lab.ts`);
+    console.log(`    missedFills: not exported by StrategyLabVariantSummary; likely requires extension in engine/strategy-lab.ts`);
+    console.log(`    goodBlocks: not exported by StrategyLabVariantSummary; likely requires extension in engine/strategy-lab.ts`);
+  }
+
+  // Champion assessment honesty
+  console.log(`\n--- Champion Assessment ---`);
+  const totalPlannedCount = variants.length * validManifests.length;
+  if (finalRuns.length < totalPlannedCount) {
+    console.log(`Outcome: inconclusive, runner/replay export still needs repair (Completed ${finalRuns.length} of ${totalPlannedCount} planned runs).`);
+  } else {
+    const winner = byStrategy[0];
+    if (winner) {
+      console.log(`Declared Champion: ${winner.label} (${winner.strategy}) with score ${winner.score.toFixed(2)}`);
+    } else {
+      console.log(`Outcome: no viable variants evaluated.`);
+    }
   }
 
   if (outCalibrationJsonl) {
@@ -337,7 +565,12 @@ async function main() {
 
   if (outJson) {
     const records = outCalibrationJsonl ? extractCalibrationRecords(combinedBatch, allManifests) : [];
-    mkdirSync(path.dirname(outJson), { recursive: true });
+    const outDir = path.dirname(outJson);
+    if (outDir && outDir !== "." && !existsSync(outDir)) {
+      mkdirSync(outDir, { recursive: true });
+    }
+
+    // Aggregated only from checkpoint rows
     writeFileSync(outJson, JSON.stringify({
       status: finalStatus,
       totalRuns: combinedBatch.summary.totalRuns,
@@ -347,13 +580,75 @@ async function main() {
       validPairs: validCount,
       invalidPairs: invalidCount,
       calibrationRecordCount: records.length,
-      timedOut: timedOut,
-      internalMismatch,
       usedForcedCompletion: false,
       summary: combinedBatch.summary
     }, null, 2), "utf-8");
     console.log(`\nSummary JSON written to: ${outJson}`);
   }
+
+  // Write completeness report
+  if (completenessJson) {
+    console.log(`Writing completeness report to ${completenessJson}...`);
+    
+    const plannedCount = variants.length * validManifests.length;
+    let completed = 0;
+    let stalled = 0;
+    let failedNonStall = 0;
+
+    const latestCheckpointRows = new Map<string, any>();
+    if (checkpointJsonl && existsSync(checkpointJsonl)) {
+      const content = readFileSync(checkpointJsonl, "utf-8");
+      const lines = content.split("\n");
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const row = JSON.parse(line);
+        latestCheckpointRows.set(`${row.variant}-${row.pairId}`, row);
+      }
+    }
+
+    const variantBreakdown: Record<string, any> = {};
+    for (const v of variants) {
+      variantBreakdown[v] = { planned: validManifests.length, completed: 0, stalled: 0, failed_nonstall: 0, missing: 0 };
+    }
+
+    for (const v of variants) {
+      for (const m of validManifests) {
+        const key = `${v}-${m.slug}`;
+        const row = latestCheckpointRows.get(key);
+        if (row) {
+          if (row.status === "completed") {
+            completed++;
+            variantBreakdown[v].completed++;
+          } else if (row.status === "stalled") {
+            stalled++;
+            variantBreakdown[v].stalled++;
+          } else {
+            failedNonStall++;
+            variantBreakdown[v].failed_nonstall++;
+          }
+        } else {
+          variantBreakdown[v].missing++;
+        }
+      }
+    }
+
+    const missing = plannedCount - (completed + stalled + failedNonStall);
+
+    writeFileSync(completenessJson, JSON.stringify({
+      planned: plannedCount,
+      completed,
+      stalled,
+      failed_nonstall: failedNonStall,
+      missing,
+      output_file: outJson,
+      variants: variantBreakdown
+    }, null, 2), "utf-8");
+    console.log(`Completeness JSON written to: ${completenessJson}`);
+  }
+
+  console.log(`\nCheckpointing Stats:`);
+  console.log(`  Rows skipped on resume: ${skippedOnResume}`);
+  console.log(`  Stalled/failed rows classified & retried: ${stalledFailedClassified}`);
 
   process.exit(finalExitCode);
 }

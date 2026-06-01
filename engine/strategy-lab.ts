@@ -33,6 +33,8 @@ export type StrategyLabBatchRequest = {
   continuousBankroll?: boolean;
   /** Optional callback invoked after each run completes (before evidence is stripped). */
   onRunComplete?: (run: StrategyLabRunResult) => void;
+  /** Optional callback to check if a specific run should be skipped (e.g. from checkpoint). */
+  shouldSkipRun?: (variant: string, file: string) => boolean;
   /** Suppress replay console/file logs. Does not affect telemetry or calibration evidence. */
   quiet?: boolean;
 };
@@ -102,6 +104,8 @@ export type StrategyLabRunResult = {
   logLoss: number | null;
   execution: ExecutionQualitySummary;
   error?: string;
+  startedAt?: string;
+  finishedAt?: string;
 };
 
 export type ExecutionQualitySummary = {
@@ -226,6 +230,8 @@ export type StrategyLabBatch = {
   continuousBankroll?: boolean;
   /** Optional callback invoked after each run completes (before evidence is stripped). */
   onRunComplete?: (run: StrategyLabRunResult) => void;
+  /** Optional callback to check if a specific run should be skipped. */
+  shouldSkipRun?: (variant: string, file: string) => boolean;
   quiet?: boolean;
   error?: string;
 };
@@ -714,7 +720,7 @@ function conservativeAdjustedPnl(run: StrategyLabRunResult & { pnl: number }): n
   return rejectedByL2 ? 0 : run.pnl;
 }
 
-function summarizeByStrategy(runs: StrategyLabRunResult[]): StrategyLabVariantSummary[] {
+export function summarizeByStrategy(runs: StrategyLabRunResult[]): StrategyLabVariantSummary[] {
   const grouped = new Map<string, StrategyLabRunResult[]>();
   for (const run of runs) {
     const current = grouped.get(run.strategy) ?? [];
@@ -730,42 +736,42 @@ function summarizeByStrategy(runs: StrategyLabRunResult[]): StrategyLabVariantSu
       const losses = completed.filter(run => run.verdict === "loss").length;
       const noTrades = completed.filter(run => run.verdict === "no_trade").length;
       const blockedVerdicts = completed.filter(run => run.verdict === "blocked").length;
-      const tradeCount = completed.filter(run => run.counts.fills > 0 || run.counts.intents > 0).length;
-      const totalPnl = parseFloat(pnlRuns.reduce((sum, run) => sum + run.pnl, 0).toFixed(4));
+      const tradeCount = completed.filter(run => (run.counts?.fills ?? 0) > 0 || (run.counts?.intents ?? 0) > 0).length;
+      const totalPnl = parseFloat(pnlRuns.reduce((sum, run) => sum + (run.pnl ?? 0), 0).toFixed(4));
       const adjustedPnls = pnlRuns.map(conservativeAdjustedPnl);
       const adjustedTotalPnl = parseFloat(adjustedPnls.reduce((sum, pnl) => sum + pnl, 0).toFixed(4));
       const failed = items.filter(run => run.status === "failed").length;
       const canceled = items.filter(run => run.status === "canceled").length;
-      const blocked = items.reduce((sum, run) => sum + run.counts.blocked, 0);
-      const problems = items.reduce((sum, run) => sum + run.counts.problems, 0);
+      const blocked = items.reduce((sum, run) => sum + (run.counts?.blocked ?? 0), 0);
+      const problems = items.reduce((sum, run) => sum + (run.counts?.problems ?? 0), 0);
       const brierRuns = completed.filter(run => run.brierScore !== null);
       const avgBrier = brierRuns.length > 0 ? brierRuns.reduce((sum, run) => sum + run.brierScore!, 0) / brierRuns.length : null;
       const avgLogLoss = brierRuns.length > 0 ? brierRuns.reduce((sum, run) => sum + run.logLoss!, 0) / brierRuns.length : null;
-      const avgFillRate = average(completed.map(run => run.execution.fillRate));
-      const avgCancelRate = average(completed.map(run => run.execution.cancelRate));
-      const avgMarkout1s = average(completed.map(run => run.execution.markouts.oneSecond));
-      const avgMarkout5s = average(completed.map(run => run.execution.markouts.fiveSecond));
-      const avgMarkout30s = average(completed.map(run => run.execution.markouts.thirtySecond));
-      const avgSettlementMarkout = average(completed.map(run => run.execution.markouts.settlement));
-      const markoutSampleCount = completed.reduce((sum, run) => sum + run.execution.markouts.samples, 0);
-      const markoutUnavailableCount = completed.reduce((sum, run) => sum + run.execution.markouts.unavailableCount, 0);
-      const avgTurnover = average(completed.map(run => run.execution.turnover));
+      const avgFillRate = average(completed.map(run => run.execution?.fillRate));
+      const avgCancelRate = average(completed.map(run => run.execution?.cancelRate));
+      const avgMarkout1s = average(completed.map(run => run.execution?.markouts?.oneSecond));
+      const avgMarkout5s = average(completed.map(run => run.execution?.markouts?.fiveSecond));
+      const avgMarkout30s = average(completed.map(run => run.execution?.markouts?.thirtySecond));
+      const avgSettlementMarkout = average(completed.map(run => run.execution?.markouts?.settlement));
+      const markoutSampleCount = completed.reduce((sum, run) => sum + (run.execution?.markouts?.samples ?? 0), 0);
+      const markoutUnavailableCount = completed.reduce((sum, run) => sum + (run.execution?.markouts?.unavailableCount ?? 0), 0);
+      const avgTurnover = average(completed.map(run => run.execution?.turnover));
 
-      const noFillCount = items.reduce((sum, run) => sum + (run.execution.conservativeFill.conservativeFillVerdictCounts.no_fill ?? 0), 0);
-      const touchOnlyCount = items.reduce((sum, run) => sum + (run.execution.conservativeFill.conservativeFillVerdictCounts.touch_only ?? 0), 0);
-      const probableFillCount = items.reduce((sum, run) => sum + (run.execution.conservativeFill.conservativeFillVerdictCounts.probable_fill ?? 0), 0);
-      const tradeThroughFillCount = items.reduce((sum, run) => sum + (run.execution.conservativeFill.conservativeFillVerdictCounts.trade_through_fill ?? 0), 0);
-      const unknownInsufficientDataCount = items.reduce((sum, run) => sum + (run.execution.conservativeFill.conservativeFillVerdictCounts.unknown_insufficient_data ?? 0), 0);
-      const totalEligibleFills = items.reduce((sum, run) => sum + run.execution.conservativeFill.eligibleFillCount, 0);
-      const totalEvaluatedFills = items.reduce((sum, run) => sum + run.execution.conservativeFill.evaluatedFillCount, 0);
-      const totalUsableFills = items.reduce((sum, run) => sum + run.execution.conservativeFill.usableEvidenceCount, 0);
-      const totalConfirmedFills = items.reduce((sum, run) => sum + run.execution.conservativeFill.confirmedFillCount, 0);
-      const totalRejectedFills = items.reduce((sum, run) => sum + run.execution.conservativeFill.rejectedFillCount, 0);
+      const noFillCount = items.reduce((sum, run) => sum + (run.execution?.conservativeFill?.conservativeFillVerdictCounts?.no_fill ?? 0), 0);
+      const touchOnlyCount = items.reduce((sum, run) => sum + (run.execution?.conservativeFill?.conservativeFillVerdictCounts?.touch_only ?? 0), 0);
+      const probableFillCount = items.reduce((sum, run) => sum + (run.execution?.conservativeFill?.conservativeFillVerdictCounts?.probable_fill ?? 0), 0);
+      const tradeThroughFillCount = items.reduce((sum, run) => sum + (run.execution?.conservativeFill?.conservativeFillVerdictCounts?.trade_through_fill ?? 0), 0);
+      const unknownInsufficientDataCount = items.reduce((sum, run) => sum + (run.execution?.conservativeFill?.conservativeFillVerdictCounts?.unknown_insufficient_data ?? 0), 0);
+      const totalEligibleFills = items.reduce((sum, run) => sum + (run.execution?.conservativeFill?.eligibleFillCount ?? 0), 0);
+      const totalEvaluatedFills = items.reduce((sum, run) => sum + (run.execution?.conservativeFill?.evaluatedFillCount ?? 0), 0);
+      const totalUsableFills = items.reduce((sum, run) => sum + (run.execution?.conservativeFill?.usableEvidenceCount ?? 0), 0);
+      const totalConfirmedFills = items.reduce((sum, run) => sum + (run.execution?.conservativeFill?.confirmedFillCount ?? 0), 0);
+      const totalRejectedFills = items.reduce((sum, run) => sum + (run.execution?.conservativeFill?.rejectedFillCount ?? 0), 0);
       const usableEvidenceRate = totalEvaluatedFills > 0 ? totalUsableFills / totalEvaluatedFills : null;
-      const avgCmarkout1s = average(completed.map(run => run.execution.conservativeFill.conservativeMarkout1sAvg));
-      const avgCmarkout5s = average(completed.map(run => run.execution.conservativeFill.conservativeMarkout5sAvg));
-      const avgCmarkout30s = average(completed.map(run => run.execution.conservativeFill.conservativeMarkout30sAvg));
-      const adverseSelectionRate = average(completed.map(run => run.execution.conservativeFill.conservativeAdverseSelectionRate));
+      const avgCmarkout1s = average(completed.map(run => run.execution?.conservativeFill?.conservativeMarkout1sAvg));
+      const avgCmarkout5s = average(completed.map(run => run.execution?.conservativeFill?.conservativeMarkout5sAvg));
+      const avgCmarkout30s = average(completed.map(run => run.execution?.conservativeFill?.conservativeMarkout30sAvg));
+      const adverseSelectionRate = average(completed.map(run => run.execution?.conservativeFill?.conservativeAdverseSelectionRate));
 
       const tradeRate = completed.length > 0 ? tradeCount / completed.length : null;
       const score = scoreStrategy({
@@ -927,13 +933,19 @@ function recommendStrategy(summaries: StrategyLabVariantSummary[]): StrategyLabR
 }
 
 function cloneBatch(batch: StrategyLabBatch): StrategyLabBatch {
-  // onRunComplete is a function — structuredClone can't handle it.
-  // Strip before cloning, restore the reference after.
+  // onRunComplete and shouldSkipRun are functions — structuredClone can't handle them.
+  // Strip before cloning, restore the references after.
   const callback = (batch as any).onRunComplete;
+  const skipCheck = (batch as any).shouldSkipRun;
   (batch as any).onRunComplete = undefined;
+  (batch as any).shouldSkipRun = undefined;
+
   const cloned = structuredClone(batch);
+
   (batch as any).onRunComplete = callback; // restore on original
+  (batch as any).shouldSkipRun = skipCheck;
   (cloned as any).onRunComplete = callback; // share reference on clone
+  (cloned as any).shouldSkipRun = skipCheck;
   return cloned;
 }
 
@@ -1076,7 +1088,6 @@ export class StrategyLabBatchManager {
     if (totalRuns > MAX_BATCH_RUNS) {
       throw new Error(`Strategy Lab batches are capped at ${MAX_BATCH_RUNS} runs; requested ${totalRuns}`);
     }
-
     const fixtureMetadata = await Promise.all(selectedFiles.map(file => validateReplayFixture(file)));
     const invalid = fixtureMetadata.find(meta => !meta.replayable);
     if (invalid) {
@@ -1123,6 +1134,7 @@ export class StrategyLabBatchManager {
       bypassReasons: request.bypassReasons,
       continuousBankroll: request.continuousBankroll,
       onRunComplete: request.onRunComplete,
+      shouldSkipRun: request.shouldSkipRun,
       quiet: request.quiet,
     } as any;
     this.batches.set(batch.id, batch);
@@ -1198,12 +1210,23 @@ export class StrategyLabBatchManager {
       if (this.cancelRequested.has(batchId) || (batch.state as StrategyLabBatchState) === "canceled") break;
       if (run.status !== "queued") continue;
 
+      if (batch.shouldSkipRun && batch.shouldSkipRun(run.strategy, run.file)) {
+        run.status = "canceled";
+        batch.progress.completedRuns = batch.runs.filter((item: StrategyLabRunResult) => item.status !== "queued" && item.status !== "running").length;
+        batch.updatedAtMs = Date.now();
+        continue;
+      }
+
       run.status = "running";
+      run.startedAt = new Date().toISOString();
       batch.updatedAtMs = Date.now();
       const restoreReplayLogs = beginQuietReplayLogs(batch.quiet === true);
 
+      let clock: VirtualClock | undefined;
+      let callbackFired = false;
+
       try {
-        const clock = new VirtualClock();
+        clock = new VirtualClock();
         const sink = new CalibrationTelemetrySink();
         const l2File = batch.l2Files?.[run.file];
         const tokenMapping = l2File 
@@ -1271,9 +1294,11 @@ export class StrategyLabBatchManager {
                 cFill.eligibleFillCount;
             }
           }
+          run.finishedAt = new Date().toISOString();
           // Fire the per-run callback before evidence is stripped
           if (batch.onRunComplete) {
             batch.onRunComplete(run);
+            callbackFired = true;
           }
           if (batch.continuousBankroll && run.pnl !== null) {
             variantBalances.set(run.variantLabel, initialBalance + run.pnl);
@@ -1284,6 +1309,11 @@ export class StrategyLabBatchManager {
           run.status = "failed";
           run.verdict = "failed";
           run.error = error instanceof Error ? error.message : String(error);
+
+          if (run.error === "Replay stalled") {
+            const virtualTs = clock ? clock.nowMs() : 0;
+            console.error(`\n[ReplayRunner STALL DETECTED] pairId: ${run.slug}, variant: ${run.strategy}, virtual timestamp: ${virtualTs} (${new Date(virtualTs).toISOString()}), replay file: ${run.file}, reason: No state change for 5 mins, output counted: yes (as stalled)`);
+          }
         }
       } finally {
         restoreReplayLogs();
@@ -1293,6 +1323,13 @@ export class StrategyLabBatchManager {
           batch.summary = recomputeSummary(batch);
         }
         batch.updatedAtMs = Date.now();
+
+        if (batch.onRunComplete && !callbackFired && run.status !== "canceled") {
+          run.finishedAt = new Date().toISOString();
+          batch.onRunComplete(run);
+          callbackFired = true;
+        }
+
         // Strip heavy evidence data from completed runs to free memory.
         // Only strip when onRunComplete is set — the caller has already
         // extracted the data incrementally. Without it, the old pipeline

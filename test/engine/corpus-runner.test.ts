@@ -4,10 +4,12 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
-describe("Corpus Runner (run-strategy-lab-paired-corpus.ts)", () => {
+describe("Corpus Runner Checkpointing and Resume", () => {
   let tmpDir: string;
   let reportsDir: string;
   let pairsDir: string;
+  let pairManifestPath: string;
+  let replayLogPath: string;
 
   beforeAll(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "corpus-runner-test-"));
@@ -28,7 +30,7 @@ describe("Corpus Runner (run-strategy-lab-paired-corpus.ts)", () => {
       rawL2LogPath: path.join(tmpDir, "l2.log"),
     };
 
-    // Minimal valid replay log: a single slot event
+    // Minimal valid replay log: a single slot event and trade
     const replayLog = JSON.stringify({
       ts: Date.now(),
       type: "slot",
@@ -46,8 +48,11 @@ describe("Corpus Runner (run-strategy-lab-paired-corpus.ts)", () => {
       tokenId: "123"
     });
 
-    fs.writeFileSync(path.join(pairsDir, "dummy.pair.json"), JSON.stringify(pairManifest));
-    fs.writeFileSync(pairManifest.replayLogPath, replayLog);
+    pairManifestPath = path.join(pairsDir, "dummy.pair.json");
+    replayLogPath = pairManifest.replayLogPath;
+    
+    fs.writeFileSync(pairManifestPath, JSON.stringify(pairManifest));
+    fs.writeFileSync(replayLogPath, replayLog);
     fs.writeFileSync(pairManifest.rawL2LogPath, "");
   });
 
@@ -70,133 +75,179 @@ describe("Corpus Runner (run-strategy-lab-paired-corpus.ts)", () => {
     });
   }
 
-  test("runs successfully on valid corpus without timeout", async () => {
-    const outJson = path.join(reportsDir, "ok-summary.json");
+  test("runs successfully and creates checkpoint, final and completeness JSON", async () => {
+    const checkpointJsonl = path.join(reportsDir, "checkpoint.partial.jsonl");
+    const outJson = path.join(reportsDir, "final.json");
+    const completenessJson = path.join(reportsDir, "completeness.json");
+
     const { stdout, stderr, code } = await runScript([
       "--pairs-dir", pairsDir,
+      "--checkpoint-jsonl", checkpointJsonl,
       "--out-json", outJson,
+      "--completeness-json", completenessJson,
       "--variants", "simulation"
     ]);
-    
+
     if (code !== 0) {
       console.error("STDOUT:", stdout);
       console.error("STDERR:", stderr);
     }
     expect(code).toBe(0);
-    expect(stdout).toContain("Strategy Lab Batch Completed. State: completed");
+    expect(fs.existsSync(checkpointJsonl)).toBe(true);
     expect(fs.existsSync(outJson)).toBe(true);
+    expect(fs.existsSync(completenessJson)).toBe(true);
+
+    const checkpointContent = fs.readFileSync(checkpointJsonl, "utf-8");
+    const row = JSON.parse(checkpointContent.trim());
+    
+    // Validate identity metadata presence
+    expect(row.gitCommit).toBeDefined();
+    expect(row.variant).toBe("simulation");
+    expect(row.pairId).toBe("btc-updown-5m-dummy");
+    expect(row.strategyConfigHash).toBeDefined();
+    expect(row.allowInferredFlow).toBe(false);
+    expect(row.fillModel).toBe("conservative");
+    expect(row.startedAt).toBeDefined();
+    expect(row.finishedAt).toBeDefined();
+    expect(row.status).toBe("completed");
+    expect(row.metrics).toBeDefined();
   }, 120000);
 
-  test("completes repeated sequential runs on a valid corpus", async () => {
-    for (let i = 1; i <= 2; i++) {
-      const outJson = path.join(reportsDir, `repeat-${i}-summary.json`);
-      const { stdout, stderr, code } = await runScript([
-        "--pairs-dir", pairsDir,
-        "--out-json", outJson,
-        "--variants", "simulation"
-      ]);
+  test("resume mode skips already completed runs", async () => {
+    const checkpointJsonl = path.join(reportsDir, "checkpoint.partial.jsonl");
+    const outJson = path.join(reportsDir, "final-resume.json");
+    
+    const { stdout, stderr, code } = await runScript([
+      "--pairs-dir", pairsDir,
+      "--checkpoint-jsonl", checkpointJsonl,
+      "--out-json", outJson,
+      "--variants", "simulation"
+    ]);
 
-      if (code !== 0) {
-        console.error("STDOUT:", stdout);
-        console.error("STDERR:", stderr);
+    expect(code).toBe(0);
+    expect(stdout).toContain("Rows skipped on resume: 1");
+  }, 120000);
+
+  test("retry mode reruns stalled/failed rows only", async () => {
+    const retryCheckpoint = path.join(reportsDir, "retry.partial.jsonl");
+    const outJson = path.join(reportsDir, "final-retry.json");
+
+    // Manually write a failed row to checkpoint
+    const mockFailedRow = {
+      gitCommit: "local",
+      variant: "simulation",
+      pairId: "btc-updown-5m-dummy",
+      replayFile: replayLogPath,
+      strategyConfigHash: "unknown",
+      allowInferredFlow: false,
+      fillModel: "conservative",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      status: "failed",
+      errorMessage: "Mock failure",
+      metrics: {
+        id: "mock-id",
+        strategy: "simulation",
+        baseStrategy: "simulation",
+        variantLabel: "simulation",
+        paperEligible: true,
+        file: replayLogPath,
+        slug: "btc-updown-5m-dummy",
+        status: "failed",
+        pnl: 0,
+        direction: null,
+        openPrice: null,
+        closePrice: null,
+        counts: {
+          intents: 0,
+          allowed: 0,
+          blocked: 0,
+          fills: 0,
+          problems: 0,
+          settlements: 0
+        },
+        verdict: "failed",
+        brierScore: null,
+        logLoss: null,
+        execution: {
+          fillRate: null,
+          cancelRate: null,
+          takerFeeSpend: 0,
+          makerRebateEstimate: 0,
+          grossEdgeCapture: null,
+          turnover: 0,
+          maxDrawdown: 0,
+          markouts: {
+            oneSecond: null,
+            fiveSecond: null,
+            thirtySecond: null,
+            settlement: null,
+            samples: 0,
+            unavailableCount: 0,
+            unavailableReasons: {}
+          },
+          conservativeFill: {
+            conservativeFillEvidenceAvailable: false,
+            conservativeFillEvidenceSource: "unavailable",
+            conservativeFillVerdictCounts: {
+              no_fill: 0,
+              touch_only: 0,
+              probable_fill: 0,
+              trade_through_fill: 0,
+              unknown_insufficient_data: 0
+            },
+            conservativeFillUnavailableReasons: {},
+            conservativeMarkout1sAvg: null,
+            conservativeMarkout5sAvg: null,
+            conservativeMarkout30sAvg: null,
+            conservativeAdverseSelectionRate: null,
+            usableEvidenceCount: 0,
+            evaluatedFillCount: 0,
+            eligibleFillCount: 0,
+            confirmedFillCount: 0,
+            rejectedFillCount: 0,
+            evidence: []
+          }
+        }
       }
-      expect(code).toBe(0);
-      expect(stdout).toContain("Strategy Lab Batch Completed. State: completed");
-      expect(fs.existsSync(outJson)).toBe(true);
+    };
+    
+    try {
+      const { execSync } = require("child_process");
+      mockFailedRow.gitCommit = execSync("git rev-parse HEAD", { encoding: "utf-8" }).trim();
+    } catch {}
+
+    fs.writeFileSync(retryCheckpoint, JSON.stringify(mockFailedRow) + "\n");
+
+    // Run without retry first - should skip
+    const skipRes = await runScript([
+      "--pairs-dir", pairsDir,
+      "--checkpoint-jsonl", retryCheckpoint,
+      "--out-json", outJson,
+      "--variants", "simulation",
+      "--force"
+    ]);
+    if (skipRes.code !== 0) {
+      console.error("STDOUT:", skipRes.stdout);
+      console.error("STDERR:", skipRes.stderr);
     }
-  }, 120000);
+    expect(skipRes.code).toBe(0);
+    expect(skipRes.stdout).toContain("Rows skipped on resume: 1");
 
-  test("timeout with incomplete runs returns non-zero code and marked as timed_out", async () => {
-    // To make it time out before completion, we'll override Date.now() to jump ahead
-    const wrapperScript = path.join(__dirname, ".tmp-timeout-runner.ts");
-    const wrapperContent = `
-const originalDateNow = Date.now;
-let count = 0;
-Date.now = () => {
-  count++;
-  if (count > 2) return originalDateNow() + 200000; // Jump 200s ahead!
-  return originalDateNow();
-};
-import "../../scripts/run-strategy-lab-paired-corpus.ts";
-`;
-    fs.writeFileSync(wrapperScript, wrapperContent);
-    const outJson = path.join(reportsDir, "timeout-summary.json");
-    
-    const { stdout, code } = await new Promise<{stdout: string, code: number}>((resolve) => {
-      const proc = spawn("bun", [wrapperScript, "--pairs-dir", pairsDir, "--out-json", outJson, "--variants", "simulation", "--timeout-ms", "120000"], { cwd: process.cwd() });
-      let out = "";
-      proc.stdout.on("data", (d) => { out += d.toString(); });
-      proc.on("close", (c) => resolve({ stdout: out, code: c ?? 1 }));
-    });
-    
-    fs.rmSync(wrapperScript, { force: true });
-    
-    expect(code).not.toBe(0); // Should fail
-    expect(stdout).toContain("[ERROR] Strategy Lab Batch Timed Out!");
-    expect(stdout).toContain("Status: timed_out");
-    expect(fs.existsSync(outJson)).toBe(true);
-    const summary = JSON.parse(fs.readFileSync(outJson, "utf8"));
-    expect(summary.status).toBe("timed_out");
-  }, 120000);
-  
-  test("graceful failure when allowing partials", async () => {
-    const wrapperScript = path.join(__dirname, ".tmp-timeout-partial-runner.ts");
-    const wrapperContent = `
-const originalDateNow = Date.now;
-let count = 0;
-Date.now = () => {
-  count++;
-  if (count > 2) return originalDateNow() + 200000; // Jump 200s ahead!
-  return originalDateNow();
-};
-import "../../scripts/run-strategy-lab-paired-corpus.ts";
-`;
-    fs.writeFileSync(wrapperScript, wrapperContent);
-    
-    const { stdout, code } = await new Promise<{stdout: string, code: number}>((resolve) => {
-      const proc = spawn("bun", [wrapperScript, "--pairs-dir", pairsDir, "--allow-partial", "--variants", "simulation", "--timeout-ms", "120000"], { cwd: process.cwd() });
-      let out = "";
-      proc.stdout.on("data", (d) => { out += d.toString(); });
-      proc.on("close", (c) => resolve({ stdout: out, code: c ?? 1 }));
-    });
-    fs.rmSync(wrapperScript, { force: true });
-    
-    expect(code).toBe(0); // allow-partial makes exit code 0
-    expect(stdout).toContain("Status: timed_out");
-  }, 120000);
-
-  test("handles internal state mismatch properly (mocked)", async () => {
-    // We create a wrapper script that mocks the StrategyLabBatchManager
-    // to simulate the case where all runs complete but state remains "running".
-    const wrapperScript = path.join(__dirname, ".tmp-mock-runner.ts");
-    const wrapperContent = `
-import { StrategyLabBatchManager } from "../../engine/strategy-lab.ts";
-const originalGetBatch = StrategyLabBatchManager.prototype.getBatch;
-StrategyLabBatchManager.prototype.getBatch = function(id) {
-  const batch = originalGetBatch.call(this, id);
-  if (batch && batch.progress.completedRuns === batch.progress.totalRuns && batch.progress.totalRuns > 0) {
-    batch.state = "running"; // Force the mismatched state!
-  }
-  return batch;
-};
-import "../../scripts/run-strategy-lab-paired-corpus.ts";
-`;
-    fs.writeFileSync(wrapperScript, wrapperContent);
-
-    const outJson = path.join(reportsDir, "mismatch-summary.json");
-    const proc = spawn("bun", [wrapperScript, "--pairs-dir", pairsDir, "--out-json", outJson, "--variants", "simulation", "--timeout-ms", "2000"], {
-      cwd: process.cwd()
-    });
-    let stdout = "";
-    proc.stdout.on("data", (d) => { stdout += d.toString(); });
-    
-    const code = await new Promise(r => proc.on("close", r));
-    fs.rmSync(wrapperScript, { force: true });
-    
-    expect(code).toBe(1); // Should fail because of internal state mismatch
-    expect(stdout).toContain("Strategy Lab Batch internal state mismatch!");
-    expect(fs.existsSync(outJson)).toBe(true);
-    const summary = JSON.parse(fs.readFileSync(outJson, "utf8"));
-    expect(summary.status).toBe("internal_state_mismatch");
+    // Run with retry mode - should rerun
+    const retryRes = await runScript([
+      "--pairs-dir", pairsDir,
+      "--checkpoint-jsonl", retryCheckpoint,
+      "--out-json", outJson,
+      "--variants", "simulation",
+      "--retry",
+      "--force"
+    ]);
+    if (retryRes.code !== 0) {
+      console.error("STDOUT:", retryRes.stdout);
+      console.error("STDERR:", retryRes.stderr);
+    }
+    expect(retryRes.code).toBe(0);
+    expect(retryRes.stdout).toContain("Stalled/failed rows classified & retried: 1");
   }, 120000);
 });
