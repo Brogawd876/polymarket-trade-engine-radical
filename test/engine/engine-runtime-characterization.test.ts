@@ -1,5 +1,7 @@
 import { describe, expect, test, spyOn, afterEach } from "bun:test";
 import { EarlyBird } from "../../engine/early-bird.ts";
+import { EngineRuntime } from "../../engine/bot-core/engine-runtime.ts";
+import { ReplayRunner } from "../../engine/bot-core/index.ts";
 import { SessionManager } from "../../engine/session-manager.ts";
 import { TerminalAccessError } from "../../utils/errors.ts";
 import { TelemetryBus } from "../../engine/telemetry/index.ts";
@@ -12,7 +14,7 @@ describe("EngineRuntime Characterization (Pre-Extraction)", () => {
   test("1. SessionManager simulation equivalence", async () => {
     const session = new SessionManager(new TelemetryBus());
 
-    const runSpy = spyOn(EarlyBird.prototype, "start").mockImplementation(async () => {});
+    const runSpy = spyOn(EngineRuntime.prototype, "start").mockImplementation(async () => {});
     const exitSpy = spyOn(process, "exit").mockImplementation(() => undefined as never);
     
     try {
@@ -20,7 +22,7 @@ describe("EngineRuntime Characterization (Pre-Extraction)", () => {
     } catch (e) {}
 
     expect(runSpy).toHaveBeenCalled();
-    const bot = (session as any)._bot as EarlyBird;
+    const bot = (session as any)._bot as EngineRuntime;
     
     // Sim properties
     expect((bot as any)._prod).toBe(false);
@@ -35,14 +37,14 @@ describe("EngineRuntime Characterization (Pre-Extraction)", () => {
   test("2. SessionManager replay equivalence", async () => {
     const session = new SessionManager(new TelemetryBus());
 
-    const runSpy = spyOn(EarlyBird.prototype, "start").mockImplementation(async () => {});
+    const runSpy = spyOn(EngineRuntime.prototype, "start").mockImplementation(async () => {});
     const exitSpy = spyOn(process, "exit").mockImplementation(() => undefined as never);
     
     try {
       await session.startReplay("test/fixtures/poly-test.jsonl", { strategy: "simulation" });
     } catch (e) {}
 
-    const bot = (session as any)._bot as EarlyBird;
+    const bot = (session as any)._bot as EngineRuntime;
     expect((bot as any)._prod).toBe(false);
     expect((bot as any)._replayReader).toBeTruthy(); // reader is wired
     expect((bot as any)._client.constructor.name).toBe("EarlyBirdSimClient");

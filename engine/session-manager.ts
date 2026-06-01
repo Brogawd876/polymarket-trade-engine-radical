@@ -1,4 +1,5 @@
-import { EarlyBird, type EngineStatus } from "./early-bird.ts";
+import type { EngineStatus } from "./bot-core/engine-runtime.ts";
+import { EngineRuntime } from "./bot-core/engine-runtime.ts";
 import { ReplayRunner, VirtualClock, RealClock, TelemetryBus } from "./bot-core/index.ts";
 import type { PaperSessionEvidence, StrategyPreset } from "./live-readiness.ts";
 import type { TelemetryEvent } from "./telemetry/types.ts";
@@ -27,7 +28,7 @@ type PaperEvidenceRecorder = (evidence: Omit<PaperSessionEvidence, "id" | "verdi
 
 export class SessionManager {
   private _sessionState: SessionState = "idle";
-  private _bot: EarlyBird | null = null;
+  private _bot: EngineRuntime | null = null;
   private _runner: ReplayRunner | null = null;
   private _blockReason: string | null = null;
   private _activeReplayFile: string | null = null;
@@ -82,7 +83,7 @@ export class SessionManager {
     
     try {
       const clock = new RealClock();
-      this._bot = new EarlyBird(
+      this._bot = new EngineRuntime(
         config.strategy,
         config.slotOffset ?? 1,
         config.prod ?? false,
@@ -129,7 +130,7 @@ export class SessionManager {
     
     try {
       const clock = new VirtualClock();
-      this._bot = new EarlyBird(
+      this._bot = new EngineRuntime(
         config.strategy,
         1,
         false,
