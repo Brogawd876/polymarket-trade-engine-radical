@@ -34,11 +34,11 @@
 * `engine/early-bird.ts` (Cannot be deleted until all 7 test suites and `session-manager.ts` are fully decoupled).
 
 ### Migration Sequence
-1. **Extraction 1 (Smallest Safe Extraction):** Extract the adapter initialization (Binance, Coinbase, Chainlink, DefaultPredictiveAggregator) from `EarlyBird` constructor into a dependency injection pattern or a dedicated `BotContextFactory` inside `bot-core/`. Ensure `EarlyBird` uses this factory so tests remain green.
-2. **Extraction 2:** Move the `TickerTracker` and slot-matching loop out of `EarlyBird` and into a dedicated `MarketSpawner`. 
-3. **Extraction 3:** Update `SessionManager` to assemble the dependencies using `BotContextFactory` and pass them to `MarketSpawner`, bypassing `EarlyBird` for live/sim paths. 
-4. **Extraction 4:** Refactor the 7 test suites to use the new `MarketSpawner` instead of `EarlyBird`.
-5. **Final Step:** Once no references remain, archive `early-bird.ts`.
+1. **Extraction 1 (Completed):** Extracted `BotInfrastructure` and `InfrastructureFactory` into `bot-core/`. `EarlyBird` now delegates context initialization.
+2. **Extraction 2 (Completed):** Extracted `MarketSpawner` into `bot-core/`. `EarlyBird` now delegates lifecycle orchestration and tick intervals. (Shutdown semantics hardened).
+3. **Extraction 3 (Pending):** Update `SessionManager` to assemble the dependencies using `InfrastructureFactory` and pass them directly to `MarketSpawner`, bypassing `EarlyBird` for live/sim paths. 
+4. **Extraction 4 (Pending):** Refactor the 7 test suites to use the new `MarketSpawner` instead of `EarlyBird`.
+5. **Final Step (Pending):** Once no references remain, archive `early-bird.ts`.
 
 ### Exact Tests Protecting Each Step
 * **Extraction 1:** Protected by `early-bird.test.ts` and `bot-core.test.ts`.

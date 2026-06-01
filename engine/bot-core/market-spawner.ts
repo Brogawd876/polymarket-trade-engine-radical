@@ -63,7 +63,20 @@ export class MarketSpawner {
 
   public get isShuttingDown(): boolean { return this._shuttingDown; }
 
-  public injectRecoveredLifecycle(slug: string, lifecycle: MarketLifecycle) {
+  /**
+   * Restores a lifecycle from persistent state into the active orchestration pool.
+   * This is explicitly used for production crash-recovery by EarlyBird.
+   * 
+   * @throws Error if the spawner is already shutting down.
+   * @throws Error if a lifecycle with the given slug already exists.
+   */
+  public injectRecoveredLifecycle(slug: string, lifecycle: MarketLifecycle): void {
+    if (this._shuttingDown) {
+      throw new Error(`[spawner] Cannot inject recovered lifecycle ${slug} during shutdown.`);
+    }
+    if (this._lifecycles.has(slug)) {
+      throw new Error(`[spawner] Cannot inject recovered lifecycle ${slug}: already exists.`);
+    }
     this._lifecycles.set(slug, lifecycle);
   }
 
@@ -108,19 +121,21 @@ export class MarketSpawner {
 
   public async stop(): Promise<void> {
     this.startShutdown();
+    if (this._tickInterval) {
+      this._opts.clock.clearInterval(this._tickInterval);
+      this._tickInterval = null;
+    }
+
     // Wait for lifecycles to settle
     let attempts = 0;
     while (this._lifecycles.size > 0 && attempts < 20) {
+      await this.tickOnce();
       await new Promise((r) => setTimeout(r, 500));
       attempts++;
     }
     if (this._lifecycles.size > 0) {
       log.write(`[shutdown] ${this._lifecycles.size} lifecycle(s) failed to stop cleanly. Force clearing.`, "red");
       this._lifecycles.clear();
-    }
-    if (this._tickInterval) {
-      this._opts.clock.clearInterval(this._tickInterval);
-      this._tickInterval = null;
     }
   }
 

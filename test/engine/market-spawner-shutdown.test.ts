@@ -81,4 +81,36 @@ describe("MarketSpawner Shutdown Semantics", () => {
     expect(timeoutsCalled).toBeGreaterThanOrEqual(20);
     expect(spawner.activeLifecycleCount).toBe(0); // Force cleared!
   });
+
+  test("stop() does not allow new lifecycles to spawn during shutdown", async () => {
+    const spawner = createSpawner();
+    (spawner as any)._opts.rounds = null; // simulate infinite rounds
+    
+    // Inject a mock lifecycle that refuses to transition to DONE immediately
+    const mockLifecycle: any = {
+      state: "RUNNING",
+      tick: async () => {},
+      shutdown: () => {
+        mockLifecycle.state = "STOPPING";
+      }
+    };
+    spawner.injectRecoveredLifecycle("hanging-slug", mockLifecycle);
+    
+    // Start shutdown
+    const stopPromise = spawner.stop();
+    
+    // While it is shutting down (waiting for the lifecycle to drain), attempt to tickOnce()
+    // It should NOT spawn a new lifecycle even if there are missing slugs
+    await spawner.tickOnce();
+    
+    // Verify no new lifecycles were spawned
+    expect(spawner.activeLifecycleCount).toBe(1);
+    
+    // Complete shutdown by letting the mock reach DONE
+    mockLifecycle.state = "DONE";
+    await spawner.tickOnce(); // Process the DONE state
+    
+    await stopPromise;
+    expect(spawner.activeLifecycleCount).toBe(0);
+  });
 });

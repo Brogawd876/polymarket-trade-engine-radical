@@ -65,13 +65,13 @@ describe("Engine-Level Geoblock Shutdown", () => {
     (bot as any)._spawner.injectRecoveredLifecycle("test-slug", mockLifecycle);
     const shutdownSpy = spyOn(bot as any, "_startShutdown");
 
-    try {
-        await (bot as any).tickOnce();
-    } catch (e: any) {
-        // Now it doesn't throw by design, so this catch is just a safeguard
-    }
+    // tickOnce should not throw TerminalAccessError
+    await (bot as any).tickOnce();
 
     expect(shutdownSpy).toHaveBeenCalledWith("Terminal Access Error");
+    expect(mockLifecycle.state).toBe("DONE"); // Lifecycle was shut down
+    expect((bot as any)._spawner.activeLifecycleCount).toBe(0); // It was removed because state became DONE
+
     await bot.stop();
   });
 });

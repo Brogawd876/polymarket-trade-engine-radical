@@ -11,9 +11,12 @@ Execute the repair of the `polymarket-trade-engine-radical` branch according to 
 - [x] Pinned `bun-version: 1.3.14` in `.github/workflows/test.yml` safely.
 
 ## Immediate Next Steps (Phase 4: Canonicalize Runtime Spine)
-1. **Extraction 1 (Smallest Safe Extraction):** Extract adapter initialization logic (Binance, Coinbase, Chainlink, Aggregator) out of `EarlyBird`'s constructor and into an injectable `BotContextFactory` or similar mechanism inside `bot-core/`. Ensure `EarlyBird` uses this behind the scenes so the 7 test suites importing it remain green.
-2. Run `bun test` and `bun run check`.
-3. Stop and report findings.
+- [x] **Extraction 1:** Extracted `BotInfrastructure` and `InfrastructureFactory` into `bot-core/`.
+- [x] **Extraction 2:** Extracted `MarketSpawner` into `bot-core/`. Fixed orchestration bugs in shutdown loop with rigorous tests.
+3. **Extraction 3:** Update `SessionManager` to assemble the dependencies using `InfrastructureFactory` and pass them directly to `MarketSpawner`.
+4. **Extraction 4:** Refactor the 7 test suites to use the new `MarketSpawner` instead of `EarlyBird`.
+5. Run `bun run verify`.
+6. Stop and report findings.
 
 ## Success Criteria
 - `early-bird.ts` slims down without breaking any existing dependent tests.
