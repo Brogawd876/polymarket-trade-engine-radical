@@ -77,7 +77,7 @@ describe("Session Lifecycle Integration", () => {
 
     // Force a position in the lifecycle to trigger _waitForResolution during shutdown
     const bot = (sessionManager as any)._bot as EarlyBird;
-    const lifecycles = (bot as any)._lifecycles as Map<string, any>;
+    const lifecycles = (bot as any)._spawner.getActiveLifecycles() as Map<string, any>;
     const lifecycle = lifecycles.values().next().value;
     if (lifecycle) {
         (lifecycle as any)._tracker._shares = 1; // Direct inject

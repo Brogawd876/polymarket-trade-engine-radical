@@ -38,7 +38,7 @@ describe("MarketSpawner Characterization (Pre-Extraction)", () => {
         const status = bot.getStatus();
         expect(status.mode).toBe("replay");
 
-        const lifecycles = (bot as any)._lifecycles as Map<string, any>;
+        const lifecycles = (bot as any)._spawner.getActiveLifecycles() as Map<string, any>;
         expect(lifecycles.size).toBeGreaterThan(0);
 
         const reader = (bot as any)._replayReader;
@@ -57,7 +57,7 @@ describe("MarketSpawner Characterization (Pre-Extraction)", () => {
 
         const bot = (sessionManager as any)._bot as EarlyBird;
         
-        const lifecycles = (bot as any)._lifecycles as Map<string, any>;
+        const lifecycles = (bot as any)._spawner.getActiveLifecycles() as Map<string, any>;
         const firstLifecycle = lifecycles.values().next().value;
         
         expect(firstLifecycle._aggregator).toBeDefined();

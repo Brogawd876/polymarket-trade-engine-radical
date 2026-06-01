@@ -58,6 +58,7 @@ import {
 } from "./event-store/writer.ts";
 import type { VenueMetadata } from "./bot-core/index.ts";
 import { CounterfactualRiskGate, type CounterfactualRiskMode } from "./replay/counterfactual-risk-gate.ts";
+import { MarketSpawner } from "./bot-core/market-spawner.ts";
 import { type RiskGate } from "./bot-core/risk-gate.ts";
 
 const SAVE_INTERVAL_MS = 5000;
@@ -89,14 +90,13 @@ export type EngineStatus = {
 };
 
 export class EarlyBird {
-  private _lifecycles = new Map<string, MarketLifecycle>();
-  private _completedSlugs = new Set<string>();
   private _completedMarkets: CompletedMarketState[] = [];
   private _client: EarlyBirdClient;
   private _apiQueue = new APIQueue();
   private _sessionPnl = 0;
   private _sessionLoss = 0;
   private _shuttingDown = false;
+  private _spawner!: MarketSpawner;
   private _lastSaveMs = 0;
   private readonly _strategyName: string;
   private readonly _strategy: Strategy;
@@ -110,7 +110,6 @@ export class EarlyBird {
   private readonly _minSessionPnl: number;
   private readonly _maxSessionProfit: number;
   private readonly _alwaysLog: boolean;
-  private _roundsCreated = 0;
   private _initialBalanceOverride?: number;
   private _tracker!: WalletTracker;
   private _ticker: TickerTracker;
@@ -133,8 +132,6 @@ export class EarlyBird {
   private readonly _replayVenueMetadata?: Partial<VenueMetadata>;
   private readonly _riskGate: RiskGate;
   private _runCompletedEventEmitted = false;
-  private _tickInterval: unknown = null;
-  private _lastPrefetchMs = 0;
   private readonly _orderBookFactory?: (
     clock: Clock,
     tradeTape: TradeTapeTracker,
@@ -218,7 +215,8 @@ export class EarlyBird {
       this._client = new PolymarketEarlyBirdClient();
     } else {
       this._client = new EarlyBirdSimClient((tokenId) => {
-        for (const lifecycle of this._lifecycles.values()) {
+        const lifecycles = this._spawner ? this._spawner.getActiveLifecycles() : new Map<string, MarketLifecycle>();
+        for (const lifecycle of lifecycles.values()) {
           const snap = lifecycle.getBookSnapshot(tokenId);
           if (snap) return snap;
         }
@@ -297,7 +295,8 @@ export class EarlyBird {
         this._userChannelFactory = () =>
           new SimUserChannel({
             getBook: (tokenId) => {
-              for (const lifecycle of this._lifecycles.values()) {
+              const lifecycles = this._spawner ? this._spawner.getActiveLifecycles() : new Map<string, MarketLifecycle>();
+        for (const lifecycle of lifecycles.values()) {
                 const snap = lifecycle.getBookSnapshot(tokenId);
                 if (snap) return snap;
               }
@@ -337,6 +336,73 @@ export class EarlyBird {
       log.write(
         `[startup] Min session PnL exit: $${this._minSessionPnl.toFixed(2)}`,
       );
+
+
+      this._spawner = new MarketSpawner({
+        botContext: {
+          ticker: this._ticker,
+          resolution: this._resolution,
+          binance: this._binance,
+          coinbase: this._coinbase,
+          aggregator: this._aggregator,
+          leadLag: this._leadLag,
+          quant: this._quant,
+          replayReader: this._replayReader ? this._replayReader : undefined,
+        },
+        client: this._client,
+        apiQueue: this._apiQueue,
+        tradeTape: this._tradeTape,
+        orderBookFactory: this._orderBookFactory,
+        strategyName: this._strategyName,
+        strategy: this._strategy,
+        strategyConfig: this._strategyConfig,
+        presetId: this._presetId,
+        slotOffset: this._slotOffset,
+        prod: this._prod,
+        marketLogMode: this._marketLogMode,
+        rounds: this._rounds,
+        riskGate: this._riskGate,
+        clock: this._clock,
+        telemetry: this._telemetry,
+        alwaysLog: this._alwaysLog,
+        eventWriter: this._eventWriter,
+        maintenance: this._maintenance,
+        conservativeFill: this._conservativeFill,
+        tracker: this._tracker,
+        userChannelFactory: this._userChannelFactory!,
+        replayVenueMetadata: this._replayVenueMetadata,
+        onLifecycleDone: (slug, lifecycle) => {
+          this._sessionPnl = parseFloat((this._sessionPnl + lifecycle.pnl).toFixed(4));
+          if (lifecycle.pnl < 0) {
+            this._sessionLoss = parseFloat((this._sessionLoss + lifecycle.pnl).toFixed(4));
+          }
+          log.write(`[${slug}] Session PnL: ${this._sessionPnl >= 0 ? "+" : ""}$${this._sessionPnl.toFixed(2)}`, this._sessionPnl >= 0 ? "green" : "red");
+          this._telemetry.push({
+            ts: this._clock.nowMs(),
+            type: "SESSION_PNL",
+            payload: { pnl: this._sessionPnl, loss: this._sessionLoss }
+          });
+          this._completedMarkets.push({
+            slug,
+            strategyName: lifecycle.strategyName,
+            pnl: lifecycle.pnl,
+            orderHistory: lifecycle.orderHistory,
+          });
+
+          if (Math.abs(this._sessionLoss) >= this._minSessionPnl) {
+            this._startShutdown(`Session loss limit reached (total losses: $${this._sessionLoss.toFixed(2)}, threshold: -$${this._minSessionPnl.toFixed(2)}).`);
+          }
+          if (this._sessionPnl >= this._maxSessionProfit) {
+            this._startShutdown(`Session profit target reached (total PnL: +$${this._sessionPnl.toFixed(2)}, target: +$${this._maxSessionProfit.toFixed(2)}).`);
+          }
+        },
+        onTerminalError: (slug, err) => {
+          this._startShutdown("Terminal Access Error");
+        },
+        onRoundsExhausted: () => {
+          this._startShutdown(`All ${this._rounds} round(s) complete.`);
+        }
+      });
 
       if (this._replayReader) {
         log.write("[startup] Replay mode: skipping saved state recovery.");
@@ -379,7 +445,7 @@ export class EarlyBird {
             this._prod,
           );
           for (const [slug, lifecycle] of recovered) {
-            this._lifecycles.set(slug, lifecycle);
+            this._spawner.injectRecoveredLifecycle(slug, lifecycle);
           }
           if (this._prod && this._persistState) {
             this._saveState();
@@ -406,22 +472,7 @@ export class EarlyBird {
       process.on("SIGINT", () => onSignal("SIGINT"));
       process.on("SIGTERM", () => onSignal("SIGTERM"));
 
-      if (!this._replayReader) {
-        log.write("[startup] Initializing predictive pre-fetching...");
-        await this._apiQueue.prefetchFutureRounds();
-        this._lastPrefetchMs = this._clock.nowMs();
-
-        this._tickInterval = this._clock.setInterval(() => {
-          this._tick().catch((e) => {
-            if (e instanceof TerminalAccessError) {
-              console.error(`\n[fatal] ${e.message}\n`);
-              this._startShutdown("Terminal Access Error");
-            } else {
-              log.write(`[engine] tick error: ${e}`, "red");
-            }
-          });
-        }, 10);
-      }
+      await this._spawner.start();
     } catch (e) {
       if (e instanceof TerminalAccessError) {
         throw new Error(`Terminal Access Error: ${e.message}`);
@@ -435,7 +486,7 @@ export class EarlyBird {
   }
 
   get activeLifecycleCount(): number {
-    return this._lifecycles.size;
+    return this._spawner ? this._spawner.activeLifecycleCount : 0;
   }
 
   get isShuttingDown(): boolean {
@@ -446,7 +497,7 @@ export class EarlyBird {
       return {
           mode: this._replayReader ? "replay" : (this._prod ? "live" : "sim"),
           strategy: this._strategyName,
-          activeLifecycles: this._lifecycles.size,
+          activeLifecycles: (this._spawner ? this._spawner.activeLifecycleCount : 0),
           isShuttingDown: this._shuttingDown,
           sessionPnl: this._sessionPnl,
           sessionLoss: this._sessionLoss,
@@ -455,7 +506,7 @@ export class EarlyBird {
   }
 
   replayStateSummary(): string {
-    return [...this._lifecycles.values()]
+    return [...(this._spawner ? this._spawner.getActiveLifecycles().values() : [])]
       .map((l) => `${l.slug}:${l.state}(pending=${l.pendingOrders.length})`)
       .join(", ");
   }
@@ -467,7 +518,8 @@ export class EarlyBird {
         next = value;
       }
     };
-    for (const lifecycle of this._lifecycles.values()) {
+    const lifecycles = this._spawner ? this._spawner.getActiveLifecycles() : new Map<string, MarketLifecycle>();
+        for (const lifecycle of lifecycles.values()) {
       consider(lifecycle.slotEndMs);
       for (const order of lifecycle.pendingOrders) {
         consider(order.expireAtMs);
@@ -477,7 +529,7 @@ export class EarlyBird {
   }
 
   async tickOnce(): Promise<void> {
-    await this._tick();
+    if (this._spawner) await this._spawner.tickOnce();
   }
 
   startShutdown(reason: string): void {
@@ -486,6 +538,7 @@ export class EarlyBird {
 
   applyReplayMarketResult(result: ReplayMarketResult): void {
     if (!this._replayReader) return;
+    if (this._spawner) this._spawner.applyReplayMarketResult(result);
     this._apiQueue.marketResult.set(result.startTime, {
       startTime: result.startTime,
       endTime: result.endTime,
@@ -497,172 +550,13 @@ export class EarlyBird {
 
   async stop(): Promise<void> {
     this._startShutdown("Explicit stop requested");
-    // Wait for lifecycles to settle
-    let attempts = 0;
-    while (this._lifecycles.size > 0 && attempts < 20) {
-      await new Promise((r) => setTimeout(r, 500));
-      attempts++;
-    }
-
-    if (this._tickInterval) this._clock.clearInterval(this._tickInterval);
+    if (this._spawner) await this._spawner.stop();
     this._ticker.destroy();
     this._resolution.stop();
     this._binance.stop();
     this._coinbase.stop();
     await this._emitRunCompleted("canceled");
     log.write("[early-bird] Stopped all adapters", "dim");
-  }
-
-  private async _tick(): Promise<void> {
-    // Create a new lifecycle for next market if not shutting down and rounds allow
-    const roundsExhausted =
-      this._rounds !== null && this._roundsCreated >= this._rounds;
-    if (!this._shuttingDown && !roundsExhausted) {
-      const slug = this._replayReader
-        ? this._replayReader.round?.slug
-        : getSlug(this._slotOffset);
-
-      if (slug && !this._lifecycles.has(slug) && !this._completedSlugs.has(slug)) {
-        const venue = this._replayReader
-          ? new ReplayVenueAdapter(this._replayReader, this._replayVenueMetadata)
-          : undefined;
-
-        const orderBook = this._replayReader
-          ? new ReplayOrderBook(this._replayReader, this._clock, this._tradeTape)
-          : this._orderBookFactory
-            ? this._orderBookFactory(this._clock, this._tradeTape)
-            : new OrderBook(this._clock, this._tradeTape);
-
-        this._lifecycles.set(
-          slug,
-          new MarketLifecycle({
-            slug,
-            apiQueue: this._apiQueue,
-            client: this._client,
-            log: (msg, color) => log.write(msg, color),
-            strategyName: this._strategyName,
-            strategy: this._strategy,
-            strategyConfig: this._strategyConfig,
-            presetId: this._presetId,
-            tracker: this._tracker,
-            ticker: this._ticker,
-            userChannel: this._userChannelFactory!(),
-            resolution: this._resolution,
-            binance: this._binance,
-            coinbase: this._coinbase,
-            aggregator: this._aggregator,
-            leadLag: this._leadLag,
-            quant: this._quant,
-            maintenance: this._maintenance,
-            venue,
-            orderBook,
-            riskGate: this._riskGate,
-            clock: this._clock,
-            telemetry: this._telemetry,
-            alwaysLog: this._alwaysLog,
-            marketLogMode: this._marketLogMode,
-            eventWriter: this._eventWriter,
-            liveMode: this._prod,
-          }),
-
-        );
-        this._roundsCreated++;
-      }
-    }
-
-    // Tick all lifecycles
-    const done: string[] = [];
-    for (const [slug, lifecycle] of this._lifecycles) {
-      try {
-        await lifecycle.tick();
-      } catch (e) {
-        if (e instanceof TerminalAccessError) {
-          console.error(`\n[fatal] [${slug}] ${e.message}\n`);
-          this._startShutdown("Terminal Access Error");
-          throw e; // Rethrow to stop EarlyBird ticks too
-        }
-        log.write(`[${slug}] tick error: ${e}`, "red");
-      }
-      if (lifecycle.state === "DONE") done.push(slug);
-    }
-
-    // Process completed lifecycles
-    for (const slug of done) {
-      const lifecycle = this._lifecycles.get(slug);
-      if (!lifecycle) continue;
-      this._sessionPnl = parseFloat(
-        (this._sessionPnl + lifecycle.pnl).toFixed(4),
-      );
-      if (lifecycle.pnl < 0) {
-        this._sessionLoss = parseFloat(
-          (this._sessionLoss + lifecycle.pnl).toFixed(4),
-        );
-      }
-      log.write(
-        `[${slug}] Session PnL: ${this._sessionPnl >= 0 ? "+" : ""}$${this._sessionPnl.toFixed(2)}`,
-        this._sessionPnl >= 0 ? "green" : "red",
-      );
-      this._telemetry.push({
-        ts: this._clock.nowMs(),
-        type: "SESSION_PNL",
-        payload: { pnl: this._sessionPnl, loss: this._sessionLoss }
-      });
-      this._completedMarkets.push({
-        slug,
-        strategyName: lifecycle.strategyName,
-        pnl: lifecycle.pnl,
-        orderHistory: lifecycle.orderHistory,
-      });
-      lifecycle.destroy();
-      this._lifecycles.delete(slug);
-      this._completedSlugs.add(slug);
-
-      if (Math.abs(this._sessionLoss) >= this._minSessionPnl) {
-        this._startShutdown(
-          `Session loss limit reached (total losses: $${this._sessionLoss.toFixed(2)}, threshold: -$${this._minSessionPnl.toFixed(2)}).`,
-        );
-      }
-
-      if (this._sessionPnl >= this._maxSessionProfit) {
-        this._startShutdown(
-          `Session profit target reached (total PnL: +$${this._sessionPnl.toFixed(2)}, target: +$${this._maxSessionProfit.toFixed(2)}).`,
-        );
-      }
-    }
-
-    if (this._persistState && this._clock.nowMs() - this._lastSaveMs >= SAVE_INTERVAL_MS) {
-      this._saveState();
-    }
-
-    if (!this._shuttingDown && roundsExhausted && this._lifecycles.size === 0) {
-      this._startShutdown(`All ${this._rounds} round(s) complete.`);
-    }
-
-    if (this._shuttingDown && this._lifecycles.size === 0) {
-      await this._emitRunCompleted("completed");
-      if (!this._replayReader) {
-        log.write("[shutdown] All settled. Exiting.", "dim");
-        if (this._persistState) this._saveState();
-        if (this._tickInterval) this._clock.clearInterval(this._tickInterval);
-        this._ticker.destroy();
-        this._resolution.stop();
-        this._binance.stop();
-        this._coinbase.stop();
-      }
-    }
-
-    // Periodic predictive pre-fetching (every 10 minutes)
-    const PREFETCH_INTERVAL_MS = 10 * 60 * 1000;
-    if (
-      !this._replayReader &&
-      !this._shuttingDown &&
-      this._clock.nowMs() - this._lastPrefetchMs >= PREFETCH_INTERVAL_MS
-    ) {
-      this._lastPrefetchMs = this._clock.nowMs();
-      this._apiQueue.prefetchFutureRounds().catch((e) => {
-        log.write(`[engine] background prefetch error: ${e}`, "red");
-      });
-    }
   }
 
   private async _emitRunCompleted(status: "completed" | "failed" | "canceled"): Promise<void> {
@@ -691,11 +585,9 @@ export class EarlyBird {
     log.write(`[shutdown] ${reason}`, "yellow");
     log.write("[shutdown] Signalling all lifecycles to cancel.", "yellow");
 
-    for (const [, lifecycle] of this._lifecycles) {
-      lifecycle.shutdown();
-    }
+    if (this._spawner) this._spawner.startShutdown();
 
-    const stoppingCount = [...this._lifecycles.values()].filter(
+    const stoppingCount = [...(this._spawner ? this._spawner.getActiveLifecycles().values() : [])].filter(
       (l) => l.state === "STOPPING",
     ).length;
 
@@ -709,7 +601,7 @@ export class EarlyBird {
   private _saveState(): void {
     if (!this._persistState) return;
     this._lastSaveMs = this._clock.nowMs();
-    const activeMarkets = [...this._lifecycles.entries()]
+    const activeMarkets = [...(this._spawner ? this._spawner.getActiveLifecycles().entries() : [])]
       .filter(([, l]) => l.state === "RUNNING" || l.state === "STOPPING")
       .map(([slug, l]) => ({
         slug,

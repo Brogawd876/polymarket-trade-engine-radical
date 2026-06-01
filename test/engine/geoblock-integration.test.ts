@@ -33,31 +33,45 @@ describe("Engine-Level Geoblock Shutdown", () => {
   test("EarlyBird _tick catches terminal error from lifecycle and triggers shutdown", async () => {
     const bot = new EarlyBird("simulation", 1, false, 1, true);
     
-    // Minimal mocks to allow _tick to run without crashing on init
     (bot as any)._userChannelFactory = () => ({});
     (bot as any)._tracker = {};
-    (bot as any)._ticker = { price: 100 };
-    (bot as any)._roundsCreated = 1; // Prevent creating new lifecycles in this test
+    (bot as any)._ticker = { schedule: () => {}, waitForReady: async () => {} };
+    (bot as any)._resolution = { start: async () => {}, isReady: () => true, subscribe: () => {}, stop: () => {} };
+    (bot as any)._binance = { start: async () => {}, stop: () => {} };
+    (bot as any)._coinbase = { start: async () => {}, stop: () => {} };
+    (bot as any)._quant = { start: async () => {} };
+    (bot as any)._aggregator = { start: async () => {} };
+    (bot as any)._tradeTape = { start: async () => {} };
+    (bot as any)._apiQueue = { prefetchFutureRounds: async () => {} };
+    (bot as any)._eventWriter = { append: async () => {}, close: async () => {} };
+    (bot as any)._client = { start: async () => {}, init: async () => {} };
+    (bot as any)._telemetry = { push: () => {} };
+    (bot as any)._replayReader = { init: async () => {} };
 
+    await bot.start();
+    
     const mockLifecycle: any = {
         slug: "test-slug",
         state: "RUNNING",
         tick: async () => {
             throw new TerminalAccessError("Ticking Blocked", 403);
         },
-        shutdown: () => {},
+        shutdown: () => {
+            mockLifecycle.state = "DONE";
+        },
         destroy: () => {}
     };
     
-    (bot as any)._lifecycles.set("test-slug", mockLifecycle);
+    (bot as any)._spawner.getActiveLifecycles().set("test-slug", mockLifecycle);
     const shutdownSpy = spyOn(bot as any, "_startShutdown");
 
     try {
-        await (bot as any)._tick();
+        await (bot as any).tickOnce();
     } catch (e: any) {
         expect(e).toBeInstanceOf(TerminalAccessError);
     }
 
     expect(shutdownSpy).toHaveBeenCalledWith("Terminal Access Error");
+    await bot.stop();
   });
 });
