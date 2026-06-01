@@ -32,6 +32,21 @@ function avgNullable(values: Array<number | null | undefined>): number | null {
   return sum / values.filter((v): v is number => typeof v === "number").length;
 }
 
+function ensureParentDir(filePath: string): void {
+  const parentDir = path.dirname(filePath);
+  if (parentDir && parentDir !== "." && !existsSync(parentDir)) {
+    mkdirSync(parentDir, { recursive: true });
+  }
+}
+
+function countJsonlRows(filePath: string): number {
+  if (!existsSync(filePath)) return 0;
+  return readFileSync(filePath, "utf-8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .length;
+}
+
 function combineVariantSummaries(summaries: StrategyLabVariantSummary[]): StrategyLabVariantSummary[] {
   const byLabel = new Map<string, StrategyLabVariantSummary[]>();
   for (const summary of summaries) {
@@ -240,6 +255,20 @@ async function main() {
 
   const replayFiles = validManifests.map(m => m.replayLogPath);
   const l2Files = Object.fromEntries(validManifests.map(m => [m.replayLogPath, m.rawL2LogPath]));
+  const preserveExistingCalibrationOutput =
+    Boolean(outCalibrationJsonl && checkpointJsonl && existsSync(checkpointJsonl) && !forceMode);
+  let streamedCalibrationRecordCount = 0;
+
+  if (outCalibrationJsonl) {
+    ensureParentDir(outCalibrationJsonl);
+    if (preserveExistingCalibrationOutput) {
+      streamedCalibrationRecordCount = countJsonlRows(outCalibrationJsonl);
+      console.log(`[Calibration] Preserving existing calibration JSONL rows: ${streamedCalibrationRecordCount}`);
+    } else {
+      writeFileSync(outCalibrationJsonl, "", "utf-8");
+      console.log(`[Calibration] Initialized calibration JSONL output: ${outCalibrationJsonl}`);
+    }
+  }
 
   // gitCommit provider
   function getGitCommit(): string {
@@ -330,6 +359,23 @@ async function main() {
   };
 
   const onRunComplete = (run: StrategyLabRunResult) => {
+    if (outCalibrationJsonl && run.status === "completed") {
+      const miniBatch = {
+        id: "single-run-calibration",
+        state: "completed",
+        createdAtMs: 0,
+        updatedAtMs: 0,
+        progress: { totalRuns: 1, completedRuns: 1 },
+        runs: [run],
+        summary: {} as any,
+      } as StrategyLabBatch;
+      const records = extractCalibrationRecords(miniBatch, allManifests);
+      if (records.length > 0) {
+        appendFileSync(outCalibrationJsonl, records.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf-8");
+        streamedCalibrationRecordCount += records.length;
+      }
+    }
+
     if (!checkpointJsonl) return;
 
     const manifest = validManifests.find(m => m.replayLogPath === run.file);
@@ -391,7 +437,7 @@ async function main() {
       files,
       l2Files: batchL2Files,
       quiet: true,
-      onRunComplete,
+      onRunComplete: (checkpointJsonl || outCalibrationJsonl) ? onRunComplete : undefined,
       shouldSkipRun,
     });
 
@@ -551,20 +597,26 @@ async function main() {
     }
   }
 
+  let finalCalibrationRecordCount = streamedCalibrationRecordCount;
   if (outCalibrationJsonl) {
-    const records = extractCalibrationRecords(combinedBatch, allManifests);
-    if (records.length > 0) {
-      mkdirSync(path.dirname(outCalibrationJsonl), { recursive: true });
-      const jsonl = records.map(r => JSON.stringify(r)).join("\n");
-      writeFileSync(outCalibrationJsonl, jsonl, "utf-8");
-      console.log(`\nCalibration records written to: ${outCalibrationJsonl} (${records.length} records)`);
+    if (checkpointJsonl && existsSync(checkpointJsonl)) {
+      const records = extractCalibrationRecords(combinedBatch, allManifests);
+      writeFileSync(
+        outCalibrationJsonl,
+        records.length > 0 ? records.map((record) => JSON.stringify(record)).join("\n") + "\n" : "",
+        "utf-8",
+      );
+      finalCalibrationRecordCount = records.length;
+      console.log(`\nCalibration records rebuilt from checkpoint evidence: ${outCalibrationJsonl} (${finalCalibrationRecordCount} records)`);
     } else {
-      console.log(`\nNo calibration records extracted to write.`);
+      console.log(`\nCalibration records written to: ${outCalibrationJsonl} (${finalCalibrationRecordCount} records)`);
     }
   }
 
   if (outJson) {
-    const records = outCalibrationJsonl ? extractCalibrationRecords(combinedBatch, allManifests) : [];
+    const calibrationRecordCount = outCalibrationJsonl
+      ? finalCalibrationRecordCount
+      : extractCalibrationRecords(combinedBatch, allManifests).length;
     const outDir = path.dirname(outJson);
     if (outDir && outDir !== "." && !existsSync(outDir)) {
       mkdirSync(outDir, { recursive: true });
@@ -579,7 +631,7 @@ async function main() {
       canceledRuns: combinedBatch.summary.canceled,
       validPairs: validCount,
       invalidPairs: invalidCount,
-      calibrationRecordCount: records.length,
+      calibrationRecordCount,
       usedForcedCompletion: false,
       summary: combinedBatch.summary
     }, null, 2), "utf-8");

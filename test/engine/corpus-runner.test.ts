@@ -128,6 +128,127 @@ describe("Corpus Runner Checkpointing and Resume", () => {
     expect(stdout).toContain("Rows skipped on resume: 1");
   }, 120000);
 
+  test("rebuilds calibration JSONL and summary counts from checkpoint evidence", async () => {
+    const checkpointJsonl = path.join(reportsDir, "calibration-checkpoint.partial.jsonl");
+    const outJson = path.join(reportsDir, "calibration-final.json");
+    const outCalibrationJsonl = path.join(reportsDir, "calibration.jsonl");
+
+    const mockCompletedRow = {
+      gitCommit: "local",
+      variant: "simulation",
+      pairId: "btc-updown-5m-dummy",
+      replayFile: replayLogPath,
+      strategyConfigHash: "unknown",
+      allowInferredFlow: false,
+      fillModel: "conservative",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      status: "completed",
+      metrics: {
+        id: "mock-completed-id",
+        strategy: "simulation",
+        baseStrategy: "simulation",
+        variantLabel: "simulation",
+        paperEligible: true,
+        file: replayLogPath,
+        slug: "btc-updown-5m-dummy",
+        status: "completed",
+        pnl: 0,
+        direction: "UP",
+        openPrice: null,
+        closePrice: null,
+        counts: {
+          intents: 1,
+          allowed: 1,
+          blocked: 0,
+          fills: 1,
+          problems: 0,
+          settlements: 1
+        },
+        verdict: "flat",
+        brierScore: null,
+        logLoss: null,
+        execution: {
+          fillRate: 1,
+          cancelRate: 0,
+          takerFeeSpend: 0,
+          makerRebateEstimate: 0,
+          grossEdgeCapture: null,
+          turnover: 5,
+          maxDrawdown: 0,
+          markouts: {
+            oneSecond: null,
+            fiveSecond: null,
+            thirtySecond: null,
+            settlement: null,
+            samples: 0,
+            unavailableCount: 0,
+            unavailableReasons: {}
+          },
+          conservativeFill: {
+            conservativeFillEvidenceAvailable: true,
+            conservativeFillEvidenceSource: "raw_l2_event_store",
+            conservativeFillVerdictCounts: {
+              no_fill: 0,
+              touch_only: 0,
+              probable_fill: 1,
+              trade_through_fill: 0,
+              unknown_insufficient_data: 0
+            },
+            conservativeFillUnavailableReasons: {},
+            conservativeMarkout1sAvg: null,
+            conservativeMarkout5sAvg: null,
+            conservativeMarkout30sAvg: null,
+            conservativeAdverseSelectionRate: null,
+            usableEvidenceCount: 1,
+            evaluatedFillCount: 1,
+            eligibleFillCount: 1,
+            confirmedFillCount: 1,
+            rejectedFillCount: 0,
+            evidence: [{
+              orderId: "ord-1",
+              tokenId: "123",
+              action: "buy",
+              side: "UP",
+              price: 0.5,
+              shares: 10,
+              placedTsMs: Date.now(),
+              verdict: "probable_fill",
+              markouts: { "1s": null, "5s": null, "30s": null },
+              adverseSelection: null
+            }]
+          }
+        }
+      }
+    };
+
+    fs.writeFileSync(checkpointJsonl, JSON.stringify(mockCompletedRow) + "\n");
+
+    const { stdout, stderr, code } = await runScript([
+      "--pairs-dir", pairsDir,
+      "--checkpoint-jsonl", checkpointJsonl,
+      "--out-json", outJson,
+      "--out-calibration-jsonl", outCalibrationJsonl,
+      "--variants", "simulation",
+      "--force"
+    ]);
+
+    if (code !== 0) {
+      console.error("STDOUT:", stdout);
+      console.error("STDERR:", stderr);
+    }
+
+    expect(code).toBe(0);
+    expect(stdout).toContain("Calibration records rebuilt from checkpoint evidence");
+    const summary = JSON.parse(fs.readFileSync(outJson, "utf-8"));
+    expect(summary.calibrationRecordCount).toBe(1);
+    const calibrationLines = fs.readFileSync(outCalibrationJsonl, "utf-8").trim().split("\n");
+    expect(calibrationLines.length).toBe(1);
+    const record = JSON.parse(calibrationLines[0]!);
+    expect(record.slug).toBe("btc-updown-5m-dummy");
+    expect(record.strategy).toBe("simulation");
+  }, 120000);
+
   test("retry mode reruns stalled/failed rows only", async () => {
     const retryCheckpoint = path.join(reportsDir, "retry.partial.jsonl");
     const outJson = path.join(reportsDir, "final-retry.json");
