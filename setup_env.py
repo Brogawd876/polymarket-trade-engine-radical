@@ -31,6 +31,8 @@ DEFAULTS = {
     "PRIVATE_KEY": "",
     "POLY_FUNDER_ADDRESS": "",
     "POLY_SIGNATURE_TYPE": "3",
+    "POLY_API_KEY_NONCE": "1",
+    "POLYGON_RPC_URL": "",
     "BUILDER_KEY": "",
     "BUILDER_SECRET": "",
     "BUILDER_PASSPHRASE": "",
@@ -151,6 +153,8 @@ class EnvSetupApp(tk.Tk):
         row = self._section(form, row, "Wallet / Login")
         row = self._field(form, row, "PRIVATE_KEY", secret=True)
         row = self._field(form, row, "POLY_FUNDER_ADDRESS")
+        row = self._field(form, row, "POLY_API_KEY_NONCE")
+        row = self._field(form, row, "POLYGON_RPC_URL")
         row = self._choice(
             form,
             row,
@@ -313,6 +317,8 @@ MARKET_WINDOW={self._normalized("MARKET_WINDOW")}
 PRIVATE_KEY={self._normalized("PRIVATE_KEY")}
 POLY_FUNDER_ADDRESS={self._normalized("POLY_FUNDER_ADDRESS")}
 POLY_SIGNATURE_TYPE={self._normalized("POLY_SIGNATURE_TYPE")}
+POLY_API_KEY_NONCE={self._normalized("POLY_API_KEY_NONCE")}
+POLYGON_RPC_URL={self._normalized("POLYGON_RPC_URL")}
 
 BUILDER_KEY={self._normalized("BUILDER_KEY")}
 BUILDER_SECRET={self._normalized("BUILDER_SECRET")}

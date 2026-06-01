@@ -430,6 +430,19 @@ export class PolymarketEarlyBirdClient implements EarlyBirdClient {
       );
     }
 
+    const rpcUrl = Env.get("POLYGON_RPC_URL");
+    if (!rpcUrl || !rpcUrl.startsWith("http")) {
+      throw new Error("POLYGON_RPC_URL must be explicitly set to a valid HTTP RPC URL.");
+    }
+
+    if (Env.get("PROD") && Env.get("MARKET_ASSET") === "btc" && Env.get("MARKET_WINDOW") === "5m" && !Env.get("CHAINLINK_BTC_5M_REFERENCE_VERIFIED")) {
+      throw new Error("CHAINLINK_BTC_5M_REFERENCE_VERIFIED must be explicitly set to true in production for BTC 5m.");
+    }
+
+    if (process.env.POLY_API_KEY_NONCE === undefined) {
+      throw new Error("POLY_API_KEY_NONCE must be explicitly set in the environment.");
+    }
+
     const funderRaw = Env.get("POLY_FUNDER_ADDRESS");
     if (this._signatureType === 0) {
       this._funder = funderRaw || this._signer.address;

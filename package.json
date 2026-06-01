@@ -7,6 +7,7 @@
     "test": "bun test",
     "test:backend": "bun test",
     "test:ui": "cd ui && bun test",
+    "verify": "bun run check && bun test && cd ui && bun run lint && bunx vitest run && bun run build",
     "calibrate": "bun scripts/run-corpus-calibration-pipeline.ts",
     "calibrate:verify": "bun scripts/run-calibration-verification-pipeline.ts",
     "wallet": "bun run scripts/wallet.ts"
