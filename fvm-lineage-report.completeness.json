@@ -1,0 +1,45 @@
+{
+  "planned": 995,
+  "completed": 988,
+  "stalled": 7,
+  "failed_nonstall": 0,
+  "missing": 0,
+  "output_file": "fvm-lineage-report.final.json",
+  "variants": {
+    "fvm-v1.1.0-raw-ungated": {
+      "planned": 199,
+      "completed": 195,
+      "stalled": 4,
+      "failed_nonstall": 0,
+      "missing": 0
+    },
+    "fvm-v1.1.1-raw-gated": {
+      "planned": 199,
+      "completed": 198,
+      "stalled": 1,
+      "failed_nonstall": 0,
+      "missing": 0
+    },
+    "fvm-v1.2.0-hygienic-ungated": {
+      "planned": 199,
+      "completed": 199,
+      "stalled": 0,
+      "failed_nonstall": 0,
+      "missing": 0
+    },
+    "fvm-v1.2.1-hygienic-gated": {
+      "planned": 199,
+      "completed": 199,
+      "stalled": 0,
+      "failed_nonstall": 0,
+      "missing": 0
+    },
+    "fair-value-maker": {
+      "planned": 199,
+      "completed": 197,
+      "stalled": 2,
+      "failed_nonstall": 0,
+      "missing": 0
+    }
+  }
+}
