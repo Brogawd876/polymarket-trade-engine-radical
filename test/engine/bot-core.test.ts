@@ -398,9 +398,55 @@ describe("AggregatedRiskGate", () => {
     });
 
     expect(result.approved).toBe(false);
-    expect(result.reasons).toContain(
-      "predictive aggregate disagreement is true",
-    );
+    expect(
+      result.reasons.some(r => r.startsWith("predictive aggregate disagreement is true"))
+    ).toBe(true);
+  });
+
+  test("production strictly fails-closed on predictive disagreement despite bypass flag", () => {
+    const nowMs = round.startTimeMs + 60_000;
+    const gate = new AggregatedRiskGate({
+      staticLimits: { ...DEFAULT_SIMULATION_RISK_LIMITS, allowProduction: true }
+    });
+    const originalBypass = process.env.BLOCK_ON_PREDICTIVE_DISAGREEMENT;
+    process.env.BLOCK_ON_PREDICTIVE_DISAGREEMENT = "false";
+    
+    try {
+      const result = gate.evaluate(buyIntent(nowMs), {
+        ...snapshot(nowMs),
+        productionEnabled: true,
+        predictiveAggregate: aggregateSnapshot(true),
+        leadLag: leadLagSnapshot("moderate", true),
+      });
+
+      expect(result.approved).toBe(false);
+      expect(
+        result.reasons.some(r => r.startsWith("predictive aggregate disagreement is true"))
+      ).toBe(true);
+    } finally {
+      process.env.BLOCK_ON_PREDICTIVE_DISAGREEMENT = originalBypass;
+    }
+  });
+
+  test("simulation permits predictive disagreement bypass flag", () => {
+    const nowMs = round.startTimeMs + 60_000;
+    const gate = new AggregatedRiskGate();
+    const originalBypass = process.env.BLOCK_ON_PREDICTIVE_DISAGREEMENT;
+    process.env.BLOCK_ON_PREDICTIVE_DISAGREEMENT = "false";
+    
+    try {
+      const result = gate.evaluate(buyIntent(nowMs), {
+        ...snapshot(nowMs),
+        productionEnabled: false,
+        predictiveAggregate: aggregateSnapshot(true),
+        leadLag: leadLagSnapshot("moderate", true),
+      });
+
+      expect(result.approved).toBe(true);
+      expect(result.reasons).toEqual(["approved"]);
+    } finally {
+      process.env.BLOCK_ON_PREDICTIVE_DISAGREEMENT = originalBypass;
+    }
   });
 
   test("blocks no healthy predictive feeds via aggregate disagreement", () => {
@@ -413,9 +459,9 @@ describe("AggregatedRiskGate", () => {
     });
 
     expect(result.approved).toBe(false);
-    expect(result.reasons).toContain(
-      "predictive aggregate disagreement is true",
-    );
+    expect(
+      result.reasons.some(r => r.startsWith("predictive aggregate disagreement is true"))
+    ).toBe(true);
   });
 
   test("treats lead-lag none from insufficient samples as informational by default", () => {

@@ -304,7 +304,7 @@ describe("MarketLifecycle aggregated risk hook", () => {
     const result = await exerciseLifecycle({ disagreement: true });
 
     expect(result.postCount).toBe(0);
-    expect(result.failedReason).toBe("predictive aggregate disagreement is true");
+    expect(result.failedReason?.startsWith("predictive aggregate disagreement is true")).toBe(true);
     expect(result.strategyInvoked).toBe(true);
   });
 

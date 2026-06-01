@@ -462,7 +462,10 @@ export class AggregatedRiskGate implements RiskGate {
     }
 
     if (snapshot.predictiveAggregate?.disagreement === true) {
-      reasons.push("predictive aggregate disagreement is true");
+      const bypass = process.env.BLOCK_ON_PREDICTIVE_DISAGREEMENT === "false";
+      if (snapshot.productionEnabled || !bypass) {
+        reasons.push(`predictive aggregate disagreement is true (divergence: ${snapshot.predictiveAggregate.divergenceAbs})`);
+      }
     }
 
     const leadLag = snapshot.leadLag;
