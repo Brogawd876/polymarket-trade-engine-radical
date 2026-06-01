@@ -19,3 +19,4 @@ export * from "./quant-monitor.ts";
 export * from "../telemetry/types.ts";
 export * from "../telemetry/bus.ts";
 export * from "../server/index.ts";
+export * from "./infrastructure-factory.ts";

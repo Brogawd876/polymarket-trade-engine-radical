@@ -40,6 +40,7 @@ import {
   type BotFeedEvent,
   type Clock,
   RealClock,
+  buildBotInfrastructure,
 } from "./bot-core/index.ts";
 import { 
   TerminalAccessError, 
@@ -187,50 +188,23 @@ export class EarlyBird {
       replayOnly: !!replayFile,
     });
 
-    if (replayFile) {
-      log.write(`[startup] Replay mode enabled: ${replayFile}`);
-      this._replayReader = new ReplayLogReader(replayFile);
-      this._ticker = new ReplayTickerTracker(this._replayReader);
-      this._resolution = new ReplayResolutionAdapter(this._replayReader);
-      this._binance = new ReplayPredictiveAdapter("binance", this._replayReader);
-      this._coinbase = new ReplayPredictiveAdapter("coinbase", this._replayReader);
-    } else {
-      this._ticker = new TickerTracker();
-      this._resolution = new ChainlinkResolutionAdapter({
-        clock: this._clock,
-        telemetry: this._telemetry,
-      });
-      this._binance = new BinancePredictiveAdapter(this._clock, this._telemetry);
-      this._coinbase = new CoinbasePredictiveAdapter(this._clock, this._telemetry);
-    }
+    const infra = buildBotInfrastructure({
+      replayFile,
+      clock: this._clock,
+      telemetry: this._telemetry,
+      strategyConfig: this._strategyConfig,
+    });
 
-    this._aggregator = new DefaultPredictiveAggregator({
-      asset: Env.get("MARKET_ASSET"),
-      feeds: {
-        binance: this._binance,
-        coinbase: this._coinbase,
-      },
-      feedWeights: {
-        binance: 0.7, // Institutional weight: Binance usually has 10x liquidity
-        coinbase: 0.3,
-      },
-      divergenceThresholdAbs: typeof this._strategyConfig.divergenceThresholdAbs === "number"
-        ? this._strategyConfig.divergenceThresholdAbs
-        : (process.env.DIVERGENCE_THRESHOLD ? parseFloat(process.env.DIVERGENCE_THRESHOLD) : undefined),
-      resolution: this._resolution,
-      clock: this._clock,
-    });
-    this._leadLag = new DefaultLeadLagMonitor({
-      asset: Env.get("MARKET_ASSET"),
-      aggregator: this._aggregator,
-      clock: this._clock,
-    });
-    this._quant = new DefaultQuantMonitor({
-      asset: Env.get("MARKET_ASSET"),
-      aggregator: this._aggregator,
-      resolution: this._resolution,
-      clock: this._clock,
-    });
+    if (infra.replayReader) {
+      this._replayReader = infra.replayReader;
+    }
+    this._ticker = infra.ticker as TickerTracker;
+    this._resolution = infra.resolution;
+    this._binance = infra.binance;
+    this._coinbase = infra.coinbase;
+    this._aggregator = infra.aggregator;
+    this._leadLag = infra.leadLag;
+    this._quant = infra.quant;
     this._tradeTape = new TradeTapeTracker({
       asset: Env.get("MARKET_ASSET"),
       clock: this._clock,
