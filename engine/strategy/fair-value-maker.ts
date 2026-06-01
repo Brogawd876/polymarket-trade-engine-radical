@@ -1,6 +1,7 @@
 import type { OrderRequest, Strategy, StrategyContext } from "./types.ts";
 import { Env } from "../../utils/config.ts";
 import { digitalCallProbability } from "../../utils/math.ts";
+import { predictIsotonicProbability } from "../replay/isotonic-calibration.ts";
 
 export interface FairValueMakerConfig {
   /** If true, bypasses 'Quote Hygiene' (early aborts on disagreement and price bounding). Use for backtesting only. */
@@ -22,6 +23,8 @@ export interface FairValueMakerConfig {
   minEdge?: number;
   /** Estimated maker rebate per share, expressed as probability/USDC cents. */
   makerRebateEstimate?: number;
+  /** Subtract Polymarket fees from quoted edge. Defaults to true for live EV correctness. */
+  feeAwareEdge?: boolean;
   /** Pull or avoid quotes when same-side imbalance is below this threshold. */
   minImbalance?: number;
   /** Pull or avoid quotes when same-side 10s CVD is below this USD threshold. */
@@ -128,6 +131,40 @@ export interface FairValueMakerConfig {
   // ── v2.1.1 Safeguards ──────────────────────────────────────────────────────────
   /** Maximum absolute USD to spend on a single position, regardless of sharePct. */
   maxSpendAbs?: number;
+
+  // ── v3.0.0 Momentum-Confirmed Dynamic Sizing ────────────────────────────────
+  /**
+   * Enable momentum-confirmed dynamic sizing.
+   * Reads the velocity of the predictive composite price (Binance/Coinbase)
+   * over a rolling window and scales sharePct accordingly:
+   * - Strong confirming momentum → scale up to momentumMaxPct
+   * - Contradicting momentum → scale down to momentumMinPct
+   * - Neutral / no data → use base sharePct unchanged
+   *
+   * This NEVER changes entry gates. It only amplifies or dampens bet size
+   * after the gate has already approved the trade.
+   */
+  momentumSizingEnabled?: boolean;
+  /** Rolling window (ms) over which to measure price velocity. Default: 5000 (5s). */
+  momentumWindowMs?: number;
+  /** Velocity threshold ($/sec) below which momentum is considered neutral. Default: 2.0 */
+  momentumNeutralThreshold?: number;
+  /** Maximum sharePct when momentum strongly confirms. Default: 0.25 (25%) */
+  momentumMaxPct?: number;
+  /** Minimum sharePct when momentum contradicts. Default: 0.05 (5%) */
+  momentumMinPct?: number;
+
+  // ── v3.6.0 Calibration Support ─────────────────────────────────────────────
+  /**
+   * Isotonic calibration model. When provided, the raw Black-Scholes
+   * probability is mapped through this model before being used for
+   * edge calculation, inventory skew, and quote placement.
+   */
+  calibrationModel?: {
+    buckets: Array<{ lowerScore: number; upperScore: number; calibratedRate: number; count: number; positiveCount: number; empiricalRate: number }>;
+    sampleCount: number;
+    positiveLabelRate: number;
+  };
 }
 
 const DEFAULT_CONFIG: Required<FairValueMakerConfig> = {
@@ -142,6 +179,7 @@ const DEFAULT_CONFIG: Required<FairValueMakerConfig> = {
   maxInventory: 100,
   minEdge: 0.005,
   makerRebateEstimate: 0,
+  feeAwareEdge: true,
   minImbalance: -0.5,
   minCvd10s: -100,
   makerOnly: true,
@@ -167,6 +205,13 @@ const DEFAULT_CONFIG: Required<FairValueMakerConfig> = {
   trailingStopActivationMargin: 0.15,
   trailingStopDrawdownMargin: 0.05,
   trailingStopOrderType: "hybrid",
+  // v3.0.0 Momentum-Confirmed Dynamic Sizing defaults
+  momentumSizingEnabled: false,
+  momentumWindowMs: 5_000,
+  momentumNeutralThreshold: 2.0,
+  momentumMaxPct: 0.25,
+  momentumMinPct: 0.05,
+  calibrationModel: undefined as any,
 };
 
 /**
@@ -225,6 +270,10 @@ export const fairValueMaker: Strategy = async (ctx) => {
   let inFlightTrailingUp = false;
   let inFlightTrailingDown = false;
 
+  // ── v3.0.0 Momentum Velocity Buffer ────────────────────────────────────────
+  // Rolling window of predictive composite prices to compute $/sec velocity
+  const velocityBuffer: { ts: number; price: number }[] = [];
+
   const evaluateQuotes = () => {
     if (isDone) return;
     const quant = ctx.quant?.latest();
@@ -250,7 +299,16 @@ export const fairValueMaker: Strategy = async (ctx) => {
     }
 
     const fairValue = calculateSettlementAnchoredFairValue(ctx, sigma);
-    const probUp = fairValue.probabilityUp;
+    let probUp = fairValue.probabilityUp;
+
+    // v3.6.0: Apply isotonic calibration if a model is provided.
+    // Maps raw Black-Scholes probability -> historically-calibrated probability.
+    if (probUp !== null && probUp !== undefined && config.calibrationModel) {
+      const calibrated = predictIsotonicProbability(config.calibrationModel as any, probUp);
+      if (calibrated !== null) {
+        probUp = calibrated;
+      }
+    }
     
     // ── v2.0.0 Toxicity Jump Filter ────────────────────────────────────────────────
     if (config.toxicJumpEnabled && fairValue.predictiveCompositePrice !== null) {
@@ -260,7 +318,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
       priceHistory.push({ ts: now, price: fairValue.predictiveCompositePrice });
       
       // Prune history older than 1000ms
-      while (priceHistory.length > 0 && now - priceHistory[0].ts > 1000) {
+      while (priceHistory.length > 0 && now - priceHistory[0]!.ts > 1000) {
         priceHistory.shift();
       }
 
@@ -271,15 +329,19 @@ export const fairValueMaker: Strategy = async (ctx) => {
       }
 
       if (priceHistory.length > 1) {
-        const oldestPrice = priceHistory[0].price;
-        const currentPrice = priceHistory[priceHistory.length - 1].price;
-        const delta = currentPrice - oldestPrice;
+        const oldest = priceHistory[0]!;
+        const current = priceHistory[priceHistory.length - 1]!;
+        if (oldest && current) {
+            const oldestPrice = oldest.price;
+            const currentPrice = current.price;
+            const delta = currentPrice - oldestPrice;
 
-        if (Math.abs(delta) >= config.toxicJumpThresholdAbs) {
-          ctx.log(`[fair-value] v2.0.0 TOXIC JUMP DETECTED ($${Math.abs(delta).toFixed(2)} move). Canceling quotes for ${config.toxicJumpCooldownMs}ms`, "red");
-          toxicBlockUntilMs = now + config.toxicJumpCooldownMs;
-          ctx.cancelOrders(ctx.pendingOrders.map(o => o.orderId));
-          return;
+            if (Math.abs(delta) >= config.toxicJumpThresholdAbs) {
+              ctx.log(`[fair-value] v2.0.0 TOXIC JUMP DETECTED ($${Math.abs(delta).toFixed(2)} move). Canceling quotes for ${config.toxicJumpCooldownMs}ms`, "red");
+              toxicBlockUntilMs = now + config.toxicJumpCooldownMs;
+              ctx.cancelOrders(ctx.pendingOrders.map(o => o.orderId));
+              return;
+            }
         }
       }
     }
@@ -367,8 +429,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
 
     // ── v1.4.0 Take-Profit Evaluation ────────────────────────────────────────────
     // Check each side independently: if we hold inventory AND the market will pay
-    // us >= takeProfitThreshold per share, post a maker SELL to exit the position.
-    // The best BID is what a buyer will pay us right now (our exit price as maker).
+    // us >= takeProfitThreshold per share, cross the current bid and exit now.
     if (config.takeProfitEnabled) {
       const tp = config.takeProfitThreshold;
 
@@ -383,8 +444,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
           if (pendingUpBuys.length > 0) {
             ctx.cancelOrders(pendingUpBuys.map(o => o.orderId));
           }
-          // Place maker sell above the best bid (makerSafePrice for sell = bestBid + tick)
-          const sellPrice = makerSafePrice(ctx, "UP", "sell", tp, config.makerOnly);
+          const sellPrice = bestBidUp;
           if (sellPrice !== null) {
             inFlightSellUp = true;
             takeProfitFiredUp = true;
@@ -398,9 +458,9 @@ export const fairValueMaker: Strategy = async (ctx) => {
                 action: "sell" as const,
                 price: sellPrice,
                 shares: inventoryUp,
-                orderType: "GTC" as const,
+                orderType: "FOK" as const,
               },
-              expireAtMs: ctx.slotEndMs - 10_000,
+              expireAtMs: ctx.clock.nowMs() + 1_000,
               onFilled: (filledShares) => {
                 inFlightSellUp = false;
                 ctx.log(
@@ -439,7 +499,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
           if (pendingDownBuys.length > 0) {
             ctx.cancelOrders(pendingDownBuys.map(o => o.orderId));
           }
-          const sellPrice = makerSafePrice(ctx, "DOWN", "sell", tp, config.makerOnly);
+          const sellPrice = bestBidDown;
           if (sellPrice !== null) {
             inFlightSellDown = true;
             takeProfitFiredDown = true;
@@ -453,9 +513,9 @@ export const fairValueMaker: Strategy = async (ctx) => {
                 action: "sell" as const,
                 price: sellPrice,
                 shares: inventoryDown,
-                orderType: "GTC" as const,
+                orderType: "FOK" as const,
               },
-              expireAtMs: ctx.slotEndMs - 10_000,
+              expireAtMs: ctx.clock.nowMs() + 1_000,
               onFilled: (filledShares) => {
                 inFlightSellDown = false;
                 ctx.log(
@@ -538,14 +598,6 @@ export const fairValueMaker: Strategy = async (ctx) => {
             if (unrealizedProfit >= config.trailingStopActivationMargin) {
               const drawdown = highWaterMarkUp - bestBidUp;
               if (drawdown >= config.trailingStopDrawdownMargin) {
-                // Determine Order Type (Hybrid logic)
-                let isTaker = config.trailingStopOrderType === "taker";
-                if (config.trailingStopOrderType === "hybrid" && drawdown >= config.trailingStopDrawdownMargin + 0.03) {
-                  // Hard panic stop if we drop 3 cents through our soft stop
-                  isTaker = true;
-                }
-                
-                // If hybrid soft stop is triggered, we only fire maker. If it fails, next tick might trigger hard taker stop.
                 inFlightTrailingUp = true;
                 trailingExitFiredUp = true;
                 
@@ -553,12 +605,9 @@ export const fairValueMaker: Strategy = async (ctx) => {
                 const pendingUpBuys = ctx.pendingOrders.filter(o => o.tokenId === upTokenId && o.action === "buy");
                 if (pendingUpBuys.length > 0) ctx.cancelOrders(pendingUpBuys.map(o => o.orderId));
                 
-                const sellPrice = isTaker 
-                    ? bestBidUp // Cross the spread
-                    : makerSafePrice(ctx, "UP", "sell", bestBidUp, true) ?? bestBidUp;
+                const sellPrice = bestBidUp;
 
-                const tag = isTaker ? "TAKER PANIC" : "MAKER SOFT";
-                ctx.log(`[fair-value] v2.1.1 TRAILING STOP UP (${tag}): Dropped $${drawdown.toFixed(3)} from high ($${highWaterMarkUp.toFixed(3)}). Selling ${inventoryUp.toFixed(3)} shares @ $${sellPrice.toFixed(3)} to protect profit.`, "yellow");
+                ctx.log(`[fair-value] v2.1.1 TRAILING STOP UP (FOK): Dropped $${drawdown.toFixed(3)} from high ($${highWaterMarkUp.toFixed(3)}). Selling ${inventoryUp.toFixed(3)} shares @ $${sellPrice.toFixed(3)} to protect profit.`, "yellow");
 
                 ctx.postOrders([{
                   req: {
@@ -566,9 +615,9 @@ export const fairValueMaker: Strategy = async (ctx) => {
                     action: "sell" as const,
                     price: sellPrice,
                     shares: inventoryUp, // Dump all remaining
-                    orderType: "GTC" as const, // Uses GTC to ensure it gets on the book
+                    orderType: "FOK" as const,
                   },
-                  expireAtMs: ctx.slotEndMs - 10_000,
+                  expireAtMs: ctx.clock.nowMs() + 1_000,
                   onFilled: (filledShares) => {
                     inFlightTrailingUp = false;
                   },
@@ -639,23 +688,15 @@ export const fairValueMaker: Strategy = async (ctx) => {
             if (unrealizedProfit >= config.trailingStopActivationMargin) {
               const drawdown = highWaterMarkDown - bestBidDown;
               if (drawdown >= config.trailingStopDrawdownMargin) {
-                let isTaker = config.trailingStopOrderType === "taker";
-                if (config.trailingStopOrderType === "hybrid" && drawdown >= config.trailingStopDrawdownMargin + 0.03) {
-                  isTaker = true;
-                }
-
                 inFlightTrailingDown = true;
                 trailingExitFiredDown = true;
                 
                 const pendingDownBuys = ctx.pendingOrders.filter(o => o.tokenId === downTokenId && o.action === "buy");
                 if (pendingDownBuys.length > 0) ctx.cancelOrders(pendingDownBuys.map(o => o.orderId));
                 
-                const sellPrice = isTaker 
-                    ? bestBidDown 
-                    : makerSafePrice(ctx, "DOWN", "sell", bestBidDown, true) ?? bestBidDown;
+                const sellPrice = bestBidDown;
 
-                const tag = isTaker ? "TAKER PANIC" : "MAKER SOFT";
-                ctx.log(`[fair-value] v2.1.1 TRAILING STOP DOWN (${tag}): Dropped $${drawdown.toFixed(3)} from high ($${highWaterMarkDown.toFixed(3)}). Selling ${inventoryDown.toFixed(3)} shares @ $${sellPrice.toFixed(3)} to protect profit.`, "yellow");
+                ctx.log(`[fair-value] v2.1.1 TRAILING STOP DOWN (FOK): Dropped $${drawdown.toFixed(3)} from high ($${highWaterMarkDown.toFixed(3)}). Selling ${inventoryDown.toFixed(3)} shares @ $${sellPrice.toFixed(3)} to protect profit.`, "yellow");
 
                 ctx.postOrders([{
                   req: {
@@ -663,9 +704,9 @@ export const fairValueMaker: Strategy = async (ctx) => {
                     action: "sell" as const,
                     price: sellPrice,
                     shares: inventoryDown,
-                    orderType: "GTC" as const,
+                    orderType: "FOK" as const,
                   },
-                  expireAtMs: ctx.slotEndMs - 10_000,
+                  expireAtMs: ctx.clock.nowMs() + 1_000,
                   onFilled: (filledShares) => {
                     inFlightTrailingDown = false;
                   },
@@ -711,7 +752,59 @@ export const fairValueMaker: Strategy = async (ctx) => {
     let targetNotional: number | null = null;
     let targetSharesBase = config.shares;
     if (config.sharesMode === "pct_of_balance" && balance > 0) {
-      targetNotional = balance * config.sharePct;
+      let effectivePct = config.sharePct;
+
+      // ── v3.0.0 Momentum-Confirmed Dynamic Sizing ──────────────────────────
+      if (config.momentumSizingEnabled && fairValue.predictiveCompositePrice !== null) {
+        const now = ctx.clock.nowMs();
+        velocityBuffer.push({ ts: now, price: fairValue.predictiveCompositePrice });
+
+        // Prune entries older than the window
+        while (velocityBuffer.length > 0 && now - velocityBuffer[0]!.ts > config.momentumWindowMs) {
+          velocityBuffer.shift();
+        }
+
+        if (velocityBuffer.length >= 2) {
+          const oldest = velocityBuffer[0]!;
+          const newest = velocityBuffer[velocityBuffer.length - 1]!;
+          const dtSec = (newest.ts - oldest.ts) / 1000;
+
+          if (dtSec > 0.5) { // Need at least 500ms of data
+            const velocityPerSec = (newest.price - oldest.price) / dtSec;
+            const absVelocity = Math.abs(velocityPerSec);
+
+            if (absVelocity > config.momentumNeutralThreshold) {
+              // Determine if momentum confirms or contradicts our probable trade
+              // If P(UP) > 0.5, we're likely buying UP → positive velocity confirms
+              // If P(UP) < 0.5, we're likely buying DOWN → negative velocity confirms
+              const probUp = fairValue.probabilityUp;
+              const momentumConfirms = probUp !== null && (
+                (probUp > 0.5 && velocityPerSec > 0) ||
+                (probUp < 0.5 && velocityPerSec < 0)
+              );
+
+              if (momentumConfirms) {
+                // Scale up: interpolate between base and max based on velocity strength
+                const strength = Math.min(1.0, absVelocity / (config.momentumNeutralThreshold * 5));
+                effectivePct = config.sharePct + (config.momentumMaxPct - config.sharePct) * strength;
+                if (now % 10000 < 1100) {
+                  ctx.log(`[fair-value] v3.0.0 MOMENTUM CONFIRMS: velocity=$${velocityPerSec.toFixed(2)}/s → sizing UP to ${(effectivePct * 100).toFixed(1)}%`, "green");
+                }
+              } else {
+                // Scale down: interpolate between base and min based on velocity strength
+                const strength = Math.min(1.0, absVelocity / (config.momentumNeutralThreshold * 5));
+                effectivePct = config.sharePct - (config.sharePct - config.momentumMinPct) * strength;
+                if (now % 10000 < 1100) {
+                  ctx.log(`[fair-value] v3.0.0 MOMENTUM CONTRADICTS: velocity=$${velocityPerSec.toFixed(2)}/s → sizing DOWN to ${(effectivePct * 100).toFixed(1)}%`, "yellow");
+                }
+              }
+            }
+            // else: neutral velocity → effectivePct stays at base sharePct
+          }
+        }
+      }
+
+      targetNotional = balance * effectivePct;
     }
 
     // 3.5a. v1.3.0 — Regime-Weighted Sizing
@@ -762,7 +855,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
 
     // Ensure resting quotes are still safe
     if (existingUp) {
-      const existingEv = quoteEv(adjustedProbUp, existingUp.price, feeRateUp, config.makerRebateEstimate);
+      const existingEv = quoteEv(adjustedProbUp, existingUp.price, feeRateUp, config.makerRebateEstimate, config.feeAwareEdge);
       if (existingEv.edge < config.minEdge) {
         ctx.log(`[fair-value] Canceling stale UP quote: ${existingUp.price} (Edge: ${existingEv.edge.toFixed(4)} < ${config.minEdge})`, "dim");
         ctx.cancelOrders([existingUp.orderId]);
@@ -770,7 +863,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
       }
     }
     if (existingDown) {
-      const existingEv = quoteEv(1 - adjustedProbUp, existingDown.price, feeRateDown, config.makerRebateEstimate);
+      const existingEv = quoteEv(1 - adjustedProbUp, existingDown.price, feeRateDown, config.makerRebateEstimate, config.feeAwareEdge);
       if (existingEv.edge < config.minEdge) {
         ctx.log(`[fair-value] Canceling stale DOWN quote: ${existingDown.price} (Edge: ${existingEv.edge.toFixed(4)} < ${config.minEdge})`, "dim");
         ctx.cancelOrders([existingDown.orderId]);
@@ -783,8 +876,8 @@ export const fairValueMaker: Strategy = async (ctx) => {
     const TOLERANCE = 0.01;
     const EPSILON = 0.0001;
 
-    const evUp = quoteEv(adjustedProbUp, bidPriceUp, feeRateUp, config.makerRebateEstimate);
-    const evDown = quoteEv(1 - adjustedProbUp, bidPriceDown, feeRateDown, config.makerRebateEstimate);
+    const evUp = quoteEv(adjustedProbUp, bidPriceUp, feeRateUp, config.makerRebateEstimate, config.feeAwareEdge);
+    const evDown = quoteEv(1 - adjustedProbUp, bidPriceDown, feeRateDown, config.makerRebateEstimate, config.feeAwareEdge);
     const flow = ctx.orderFlow?.latest() ?? null;
     const allowUpFlow = flowAllowsSide(flow, "UP", config, ctx);
     const allowDownFlow = flowAllowsSide(flow, "DOWN", config, ctx);
@@ -847,7 +940,9 @@ export const fairValueMaker: Strategy = async (ctx) => {
       
       // v2.1.1 Enforce Max Spend Cap
       if (config.maxSpendAbs !== undefined && price > 0) {
-        const maxShares = config.maxSpendAbs / price;
+        const spentSoFar = side === "UP" ? totalSpendUp : totalSpendDown;
+        const availableSpend = Math.max(0, config.maxSpendAbs - spentSoFar);
+        const maxShares = availableSpend / price;
         if (shares > maxShares) {
           shares = maxShares;
         }
@@ -1118,14 +1213,19 @@ function feeRate(ctx: StrategyContext, tokenId: string): number {
   return raw > 1 ? raw / 10_000 : raw;
 }
 
-function quoteEv(probability: number, price: number | null, feeRate: number, makerRebateEstimate: number) {
+function quoteEv(
+  probability: number,
+  price: number | null,
+  feeRate: number,
+  makerRebateEstimate: number,
+  feeAwareEdge: boolean,
+) {
   if (price === null) {
     return { edge: Number.NEGATIVE_INFINITY, feeReference: 0 };
   }
-  const takerFee = 0;
   const feeReference = feeRate * price * (1 - price);
   return {
-    edge: probability - price - takerFee + makerRebateEstimate,
+    edge: probability - price - (feeAwareEdge ? feeReference : 0) + makerRebateEstimate,
     feeReference,
   };
 }

@@ -6,6 +6,7 @@ import { lateEntryAdaptive } from "./late-entry-adaptive.ts";
 import { hyperAggressive } from "./hyper-aggressive.ts";
 import { fairValueMaker } from "./fair-value-maker.ts";
 import { avellanedaMaker } from "./avellaneda-maker.ts";
+import { radicalHybrid } from "./radical-hybrid.ts";
 
 export type StrategyVariant = {
   id: string;
@@ -27,9 +28,11 @@ export const strategies: Record<string, Strategy> = {
   "late-entry": lateEntry,
   "late-entry-optimized": lateEntryOptimized,
   "late-entry-adaptive": lateEntryAdaptive,
+  "hyper-aggressive": hyperAggressive,
   hyperaggressive: hyperAggressive,
   "fair-value-maker": fairValueMaker,
   "avellaneda-maker": avellanedaMaker,
+  "radical-hybrid": radicalHybrid,
 };
 
 

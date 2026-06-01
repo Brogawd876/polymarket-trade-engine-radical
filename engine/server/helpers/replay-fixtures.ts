@@ -11,6 +11,13 @@ export type ReplayFixtureMetadata = {
   strategy?: string;
 };
 
+function slugStartMs(slug: string | undefined): number | null {
+  const match = slug?.match(/-(\d+)$/);
+  if (!match) return null;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) ? seconds * 1000 : null;
+}
+
 /**
  * Validates a log file to see if it's a replayable structured market log.
  */
@@ -46,25 +53,47 @@ export async function validateReplayFixture(logPath: string): Promise<ReplayFixt
       return metadata;
     }
 
-    // Check first few lines for NDJSON and 'slot' type
     let foundSlot = false;
-    for (let i = 0; i < Math.min(5, lines.length); i++) {
+    let lastTs: number | null = null;
+    let hasMarketPrice = false;
+    let hasResolution = false;
+
+    for (let i = 0; i < lines.length; i++) {
       try {
         const line = lines[i];
         if (line === undefined) continue;
         const entry = JSON.parse(line);
+        if (typeof entry.ts === "number") lastTs = entry.ts;
+        if (entry.type === "market_price") hasMarketPrice = true;
+        if (entry.type === "resolution") hasResolution = true;
         if (entry.type === "slot") {
-          metadata.slug = entry.payload?.slug || entry.slug;
-          metadata.strategy = entry.payload?.strategy || entry.strategy;
+          metadata.slug ??= entry.payload?.slug || entry.slug;
+          metadata.strategy ??= entry.payload?.strategy || entry.strategy;
           foundSlot = true;
-          break;
         }
       } catch (e) {
-        // Not JSON, continue checking
+        if (!foundSlot) {
+          metadata.validationStatus = "invalid";
+          metadata.reason = `Replay log parse failed: ${e instanceof Error ? e.message : String(e)}`;
+          return metadata;
+        }
       }
     }
 
     if (foundSlot) {
+      const expectedStartMs = slugStartMs(metadata.slug);
+      if (
+        expectedStartMs !== null &&
+        lastTs !== null &&
+        lastTs < expectedStartMs &&
+        !hasMarketPrice &&
+        !hasResolution
+      ) {
+        metadata.validationStatus = "invalid";
+        metadata.reason = "Replay ended before market open and has no terminal market price or resolution";
+        return metadata;
+      }
+
       metadata.replayable = true;
       metadata.validationStatus = "valid";
       if (metadata.slug) {

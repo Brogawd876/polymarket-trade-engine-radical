@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { deriveResultFromEvents, type StrategyLabRunResult } from "../../engine/strategy-lab.ts";
+import { deriveResultFromEvents, recomputeSummaryForTest, type StrategyLabBatch, type StrategyLabRunResult } from "../../engine/strategy-lab.ts";
 import type { TelemetryEvent } from "../../engine/bot-core/index.ts";
 
 describe("StrategyLab Rigorous Fill Evidence", () => {
@@ -27,6 +27,10 @@ describe("StrategyLab Rigorous Fill Evidence", () => {
     return deriveResultFromEvents(BASE_RESULT, events, [], l2Events);
   }
 
+  function runForStrategy(strategy: string, events: TelemetryEvent[], l2Events: any[]) {
+    return deriveResultFromEvents({ ...BASE_RESULT, id: strategy, strategy, baseStrategy: strategy, variantLabel: strategy }, events, [], l2Events);
+  }
+
   test("missing raw L2 file -> conservative evidence unavailable", () => {
     const res = runScorer([
       { ts: 1000, type: "ORDER_INTENT", payload: { slug: "btc-1000", intent: { id: "intent1", tokenId: "TOKEN_A", createdAtMs: 1001 } as any } },
@@ -51,6 +55,8 @@ describe("StrategyLab Rigorous Fill Evidence", () => {
     expect(res.execution.conservativeFill.evaluatedFillCount).toBe(1);
     expect(res.execution.conservativeFill.usableEvidenceCount).toBe(1);
     expect(res.execution.conservativeFill.conservativeFillVerdictCounts.trade_through_fill).toBe(1);
+    expect(res.execution.conservativeFill.confirmedFillCount).toBe(1);
+    expect(res.execution.conservativeFill.rejectedFillCount).toBe(0);
   });
 
   test("raw L2 book touch only -> touch_only", () => {
@@ -63,6 +69,61 @@ describe("StrategyLab Rigorous Fill Evidence", () => {
     expect(res.execution.conservativeFill.evaluatedFillCount).toBe(1);
     expect(res.execution.conservativeFill.usableEvidenceCount).toBe(1);
     expect(res.execution.conservativeFill.conservativeFillVerdictCounts.touch_only).toBe(1);
+    expect(res.execution.conservativeFill.confirmedFillCount).toBe(0);
+    expect(res.execution.conservativeFill.rejectedFillCount).toBe(1);
+  });
+
+  test("positive replay PnL is not a win when conservative L2 rejects every fill", () => {
+    const res = runScorer([
+      { ts: 1001, type: "ORDER_INTENT", payload: { slug: "btc-1000", intent: { id: "intent1", tokenId: "TOKEN_A", createdAtMs: 1001 } as any } },
+      { ts: 1005, type: "ORDER_LIFECYCLE", payload: { slug: "btc-1000", orderId: "order1", intentId: "intent1", status: "filled", side: "UP", action: "buy", price: 0.50, shares: 10 } as any },
+      { ts: 2000, type: "ROUND_RESOLUTION", payload: { slug: "btc-1000", direction: "UP", openPrice: 100_000, closePrice: 100_100 } as any },
+      { ts: 2001, type: "ROUND_PNL", payload: { slug: "btc-1000", pnl: 5 } as any },
+    ], [
+      { eventType: "market_book_snapshot", processedTsMs: 1002, payload: { tokenId: "TOKEN_A", side: "UP", bestBid: 0.50, bestAsk: 0.52 } },
+    ]);
+
+    expect(res.pnl).toBe(5);
+    expect(res.verdict).toBe("flat");
+    expect(res.execution.conservativeFill.confirmedFillCount).toBe(0);
+    expect(res.execution.conservativeFill.rejectedFillCount).toBe(1);
+    expect(res.execution.conservativeFill.conservativeFillWarning).toBe("optimistic_pnl_rejected_by_l2");
+  });
+
+  test("summary scoring ranks conservative-adjusted PnL ahead of fake raw PnL", async () => {
+    const optimistic = runForStrategy("optimistic", [
+      { ts: 1001, type: "ORDER_INTENT", payload: { slug: "btc-1000", intent: { id: "opt-intent", tokenId: "TOKEN_A", createdAtMs: 1001 } as any } },
+      { ts: 1005, type: "ORDER_LIFECYCLE", payload: { slug: "btc-1000", orderId: "opt-order", intentId: "opt-intent", status: "filled", side: "UP", action: "buy", price: 0.50, shares: 10 } as any },
+      { ts: 2000, type: "ROUND_RESOLUTION", payload: { slug: "btc-1000", direction: "UP", openPrice: 100_000, closePrice: 100_100 } as any },
+      { ts: 2001, type: "ROUND_PNL", payload: { slug: "btc-1000", pnl: 10 } as any },
+    ], [
+      { eventType: "market_book_snapshot", processedTsMs: 1002, payload: { tokenId: "TOKEN_A", side: "UP", bestBid: 0.50, bestAsk: 0.52 } },
+    ]);
+
+    const confirmed = runForStrategy("confirmed", [
+      { ts: 1001, type: "ORDER_INTENT", payload: { slug: "btc-1000", intent: { id: "conf-intent", tokenId: "TOKEN_B", createdAtMs: 1001 } as any } },
+      { ts: 1005, type: "ORDER_LIFECYCLE", payload: { slug: "btc-1000", orderId: "conf-order", intentId: "conf-intent", status: "filled", side: "UP", action: "buy", price: 0.50, shares: 10 } as any },
+      { ts: 2000, type: "ROUND_RESOLUTION", payload: { slug: "btc-1000", direction: "UP", openPrice: 100_000, closePrice: 100_100 } as any },
+      { ts: 2001, type: "ROUND_PNL", payload: { slug: "btc-1000", pnl: 1 } as any },
+    ], [
+      { eventType: "market_trade", processedTsMs: 1002, payload: { tokenId: "TOKEN_B", price: 0.49, shares: 10 } },
+    ]);
+
+    const summary = recomputeSummaryForTest({
+      id: "batch",
+      state: "completed",
+      createdAtMs: 0,
+      updatedAtMs: 0,
+      progress: { totalRuns: 2, completedRuns: 2 },
+      request: { files: [] },
+      runs: [optimistic, confirmed],
+      summary: {} as any,
+    } as StrategyLabBatch);
+
+    expect(summary.totalPnl).toBe(11);
+    expect(summary.conservativeAdjustedTotalPnl).toBe(1);
+    expect(summary.byStrategy[0]!.strategy).toBe("confirmed");
+    expect(summary.byStrategy.find(row => row.strategy === "optimistic")!.conservativeAdjustedTotalPnl).toBe(0);
   });
 
   test("raw L2 wrong token -> unknown_insufficient_data does not count as usable", () => {

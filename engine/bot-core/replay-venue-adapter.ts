@@ -8,6 +8,10 @@ import {
 } from "./data-sources.ts";
 import type { ReplayLogReader, ReplayEvent } from "./replay-log-reader.ts";
 
+const replayDebug = (message: string): void => {
+  if (process.env.REPLAY_DEBUG === "true") console.log(message);
+};
+
 export class ReplayVenueAdapter implements VenueDataAdapter {
   readonly role = "venue";
   readonly source = "replay-polymarket-clob";
@@ -43,7 +47,7 @@ export class ReplayVenueAdapter implements VenueDataAdapter {
     round: RoundWindow,
     existingMetadata?: Partial<VenueMetadata>,
   ): Promise<VenueMetadata | null> {
-    console.log(`[ReplayVenueAdapter] initRound: ${round.slug}`);
+    replayDebug(`[ReplayVenueAdapter] initRound: ${round.slug}`);
     this.currentRound = round;
     if (this._lastOrderBook) this.handleEvent(this._lastOrderBook);
     const metadata = existingMetadata ?? this.replayMetadata;

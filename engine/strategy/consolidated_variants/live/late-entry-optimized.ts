@@ -1,3 +1,4 @@
+/** [IMPORTED LEGACY VARIANT]: live snapshot **/
 import type { Strategy } from "./types.ts";
 import { lateEntry, type LateEntryConfig } from "./late-entry.ts";
 
@@ -47,3 +48,4 @@ export const lateEntryOptimized: Strategy = async (ctx) => {
     // We wrap the base late-entry strategy but pass our optimized configuration
     return lateEntry(ctx, OPTIMIZED_CONFIG);
 };
+

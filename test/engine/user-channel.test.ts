@@ -2,6 +2,8 @@ import { describe, test, expect } from "bun:test";
 import { SimUserChannel } from "../../engine/user-channel.ts";
 import type { OrderRequest } from "../../engine/strategy/types.ts";
 import type { BookSnapshot } from "../../engine/client.ts";
+import type { FillModelBook } from "../../engine/replay/fill-model.ts";
+import { VirtualClock } from "../../engine/bot-core/replay-runner.ts";
 
 // SimUserChannel exposes processOrderEvent / processTradeEvent as protected.
 // This subclass surfaces them so tests can drive raw event sequences and
@@ -266,6 +268,54 @@ describe("UserChannelBase taker fill handling (prod scenario)", () => {
       taker_order_id: "order-1",
     });
 
+    expect(filledShares).toBe(10);
+  });
+});
+
+describe("SimUserChannel conservative maker fills", () => {
+  test("does not fill full maker order when exact trade only clears queue ahead", () => {
+    const clock = new VirtualClock();
+    const book: FillModelBook = {
+      bids: [[0.49, 5]],
+      asks: [[0.5, 20]],
+    };
+    const channel = new SimUserChannel({
+      getBook: () => book,
+      clock,
+      conservativeFill: true,
+    });
+    let filledShares = 0;
+
+    channel.subscribe("condition-1");
+    channel.trackOrder("order-1", {
+      req: {
+        tokenId: "tok-1",
+        action: "buy",
+        price: 0.49,
+        shares: 10,
+        orderType: "GTC",
+      },
+      expireAtMs: 60_000,
+      onFilled: (shares) => {
+        filledShares = shares;
+      },
+    });
+
+    book.bids = [[0.49, 0]];
+    book.lastTradePrice = 0.49;
+    book.lastTradeSize = 5;
+    book.lastTradeTs = 210;
+    clock.setNowMs(250);
+
+    expect(channel.isMatched("order-1")).toBe(false);
+    expect(filledShares).toBe(0);
+
+    book.lastTradeSize = 10;
+    book.lastTradeTs = 260;
+    clock.setNowMs(270);
+
+    expect(channel.isMatched("order-1")).toBe(true);
+    clock.setNowMs(4_270);
     expect(filledShares).toBe(10);
   });
 });

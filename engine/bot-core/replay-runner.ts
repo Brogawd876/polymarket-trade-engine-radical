@@ -26,6 +26,7 @@ export type ReplayMarketResult = {
 export type ReplayRunnerOptions = {
   stallTimeoutMs?: number;
   stallCheckEveryTicks?: number;
+  verbose?: boolean;
 };
 
 export class VirtualClock implements Clock {
@@ -113,6 +114,7 @@ export class ReplayRunner {
   private telemetry: TelemetrySink;
   private stallTimeoutMs: number;
   private stallCheckEveryTicks: number;
+  private verbose: boolean;
   private finalized = false;
 
   constructor(reader: ReplayLogReader, bot: ReplayBot, clock: VirtualClock, telemetry?: TelemetrySink, options?: ReplayRunnerOptions) {
@@ -122,6 +124,11 @@ export class ReplayRunner {
     this.telemetry = telemetry ?? new NullTelemetrySink();
     this.stallTimeoutMs = options?.stallTimeoutMs ?? 300_000;
     this.stallCheckEveryTicks = options?.stallCheckEveryTicks ?? 100;
+    this.verbose = options?.verbose ?? false;
+  }
+
+  private debug(message: string): void {
+    if (this.verbose) console.log(message);
   }
 
   private finalize(reason: string): void {
@@ -149,7 +156,7 @@ export class ReplayRunner {
   }
 
   async run(): Promise<{ ticks: number; completed: true; finalTimeMs: number }> {
-    console.log("[ReplayRunner] Priming data...");
+    this.debug("[ReplayRunner] Priming data...");
     await this.reader.init();
     const unsubscribeReplayEvents = this.reader.subscribe((evt) => this.applyReplayEvent(evt));
 
@@ -168,7 +175,7 @@ export class ReplayRunner {
             (evt.type === "orderbook_snapshot" && evt.up && evt.down) ||
             evt.type === "market_book_snapshot"
           ) {
-              console.log(`[ReplayRunner] Found non-null orderbook snapshot or market book snapshot at ts=${evt.ts}`);        
+              this.debug(`[ReplayRunner] Found non-null orderbook snapshot or market book snapshot at ts=${evt.ts}`);
               hasData = true;
           }
         });
@@ -178,12 +185,12 @@ export class ReplayRunner {
 
         if (hasData) break;
       }
-      console.log(`[ReplayRunner] Primed ${primedCount} events. isDone=${this.reader.isDone()}`);       
+      this.debug(`[ReplayRunner] Primed ${primedCount} events. isDone=${this.reader.isDone()}`);
 
-      console.log("[ReplayRunner] Starting engine...");
+      this.debug("[ReplayRunner] Starting engine...");
       await this.bot.start();
 
-      const TICK_INTERVAL_MS = 100;
+      const TICK_INTERVAL_MS = 10;
       let lastStateHash = "";
       let lastProgressMs = this.clock.nowMs();
       let tickCount = 0;
@@ -204,7 +211,7 @@ export class ReplayRunner {
         this.clock.setNowMs(targetNowMs);
         await this.reader.advanceTo(targetNowMs);
 
-        // Only tick the bot logic if we've reached or passed a 100ms virtual interval.
+        // Only tick the bot logic if we've reached or passed the 10ms virtual interval.
         if (this.clock.nowMs() >= nextTickTargetMs - 1) {
           await this.bot.tickOnce();
           tickCount++;
@@ -226,7 +233,7 @@ export class ReplayRunner {
           // Progress logging every 100 ticks (10s virtual time)
           if (tickCount % this.stallCheckEveryTicks === 0) {
              const states = this.bot.replayStateSummary();
-             if (tickCount % 100 === 0) {
+             if (this.verbose && tickCount % 100 === 0) {
                console.log(`[ReplayRunner] tick=${tickCount} time=${new Date(this.clock.nowMs()).toISOString()} active=${this.bot.activeLifecycleCount} states=[${states}]`);
              }
 
@@ -262,7 +269,7 @@ export class ReplayRunner {
         await new Promise(r => setImmediate(r));
       }
 
-      console.log("[ReplayRunner] Replay complete. Shutting down...");
+      this.debug("[ReplayRunner] Replay complete. Shutting down...");
       this.finalize("Replay complete.");
 
       while (this.bot.activeLifecycleCount > 0) {
@@ -270,7 +277,7 @@ export class ReplayRunner {
        await this.bot.tickOnce();
       }
 
-      console.log("[ReplayRunner] Finished.");
+      this.debug("[ReplayRunner] Finished.");
       this.telemetry.push({
         ts: this.clock.nowMs(),
         type: "REPLAY_PROGRESS",

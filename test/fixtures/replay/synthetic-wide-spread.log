@@ -1,0 +1,4 @@
+{"ts":1778941675294,"type":"slot","action":"start","slug":"btc-updown-5m-synthetic-wide-spread","startTime":1778941675293,"endTime":1778942100000,"strategy":"simulation"}
+{"ts":1778941675295,"type":"orderbook_snapshot","up":{"bids":[[0.40,100]],"asks":[[0.50,100]]},"down":{"bids":[[0.50,100]],"asks":[[0.60,100]]}}
+{"ts":1778941675296,"type":"ticker","assetPrice":77971.00,"binancePrice":77971.00,"coinbasePrice":77971.00}
+{"ts":1778942100000,"type":"slot","action":"end","slug":"btc-updown-5m-synthetic-wide-spread"}

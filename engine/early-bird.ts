@@ -133,6 +133,7 @@ export class EarlyBird {
   private readonly _riskGate: RiskGate;
   private _runCompletedEventEmitted = false;
   private _tickInterval: unknown = null;
+  private _lastPrefetchMs = 0;
   private readonly _orderBookFactory?: (
     clock: Clock,
     tradeTape: TradeTapeTracker,
@@ -432,6 +433,10 @@ export class EarlyBird {
       process.on("SIGTERM", () => onSignal("SIGTERM"));
 
       if (!this._replayReader) {
+        log.write("[startup] Initializing predictive pre-fetching...");
+        await this._apiQueue.prefetchFutureRounds();
+        this._lastPrefetchMs = this._clock.nowMs();
+
         this._tickInterval = this._clock.setInterval(() => {
           this._tick().catch((e) => {
             if (e instanceof TerminalAccessError) {
@@ -441,7 +446,7 @@ export class EarlyBird {
               log.write(`[engine] tick error: ${e}`, "red");
             }
           });
-        }, 100);
+        }, 10);
       }
     } catch (e) {
       if (e instanceof TerminalAccessError) {
@@ -670,6 +675,19 @@ export class EarlyBird {
         this._binance.stop();
         this._coinbase.stop();
       }
+    }
+
+    // Periodic predictive pre-fetching (every 10 minutes)
+    const PREFETCH_INTERVAL_MS = 10 * 60 * 1000;
+    if (
+      !this._replayReader &&
+      !this._shuttingDown &&
+      this._clock.nowMs() - this._lastPrefetchMs >= PREFETCH_INTERVAL_MS
+    ) {
+      this._lastPrefetchMs = this._clock.nowMs();
+      this._apiQueue.prefetchFutureRounds().catch((e) => {
+        log.write(`[engine] background prefetch error: ${e}`, "red");
+      });
     }
   }
 

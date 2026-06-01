@@ -4,6 +4,11 @@
   "type": "module",
   "scripts": {
     "check": "tsc -b --noEmit",
+    "test": "bun test",
+    "test:backend": "bun test",
+    "test:ui": "cd ui && bun test",
+    "calibrate": "bun scripts/run-corpus-calibration-pipeline.ts",
+    "calibrate:verify": "bun scripts/run-calibration-verification-pipeline.ts",
     "wallet": "bun run scripts/wallet.ts"
   },
   "devDependencies": {

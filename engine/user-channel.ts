@@ -332,7 +332,8 @@ export class SimUserChannel extends UserChannelBase {
 
   subscribe(_conditionId: string): void {
     if (this._interval) this._clock.clearInterval(this._interval);
-    this._interval = this._clock.setInterval(() => this._check(), 100);
+    // Tick at 10ms for high-resolution matching
+    this._interval = this._clock.setInterval(() => this._check(), 10);
   }
 
   isReady(): boolean {
@@ -389,7 +390,8 @@ export class SimUserChannel extends UserChannelBase {
     if (!state) return false;
 
     const latencyMs = parseInt(process.env.SIM_MATCH_DELAY_MS ?? "200", 10);
-    if (this._clock.nowMs() - state.placementTsMs < latencyMs) {
+    const elapsed = this._clock.nowMs() - state.placementTsMs;
+    if (elapsed < latencyMs) {
       return false; // Still in flight, cannot be filled
     }
 
@@ -452,7 +454,8 @@ export class SimUserChannel extends UserChannelBase {
       if (t.matched) continue;
       const { req } = t.request;
       const book = this._getBook(req.tokenId);
-      if (!this._checkFill(req, book, orderId)) continue;
+      const isFilled = this._checkFill(req, book, orderId);
+      if (!isFilled) continue;
 
       const tradeId = crypto.randomUUID();
       this.processOrderEvent({

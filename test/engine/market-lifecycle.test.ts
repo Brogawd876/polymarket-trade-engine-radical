@@ -733,6 +733,7 @@ describe("Test 13: emergencySells promise awaits all loops", () => {
           req: { tokenId: DOWN_TOKEN, action: "buy", price: 0.5, shares: 6 },
           expireAtMs: SLOT_END_MS,
           onFilled: (boughtShares) => {
+            process.env.SIM_BALANCE_DELAY_MS = "4000";
             // Park sell at 0.99 — won't fill at any DOWN bid in the fixture.
             ctx.postOrders([
               {

@@ -1,8 +1,9 @@
+/** [IMPORTED LEGACY VARIANT]: ci-repro snapshot **/
 // Buy and Hold strategy
 
 import type { Strategy, StrategyContext } from "./types.ts";
-import { Env } from "../../utils/config.ts";
-import type { OrderFlowSnapshot } from "../bot-core/data-sources.ts";
+import { Env } from "../../../../utils/config.ts";
+import type { OrderFlowSnapshot } from "../../../bot-core/data-sources.ts";
 
 class RSI {
   private _period: number;
@@ -646,3 +647,4 @@ export async function lateEntry(ctx: StrategyContext, configOverride: LateEntryC
     }
   }, 0);
 }
+

@@ -3,6 +3,10 @@ import { PriceLevelMap } from "../../utils/price-level-map.ts";
 import type { ReplayLogReader, ReplayEvent } from "./replay-log-reader.ts";
 import type { Clock } from "./data-sources.ts";
 
+const replayDebug = (message: string): void => {
+  if (process.env.REPLAY_DEBUG === "true") console.log(message);
+};
+
 export class ReplayOrderBook extends OrderBook {
   private lastUp: any = null;
   private lastDown: any = null;
@@ -19,7 +23,7 @@ export class ReplayOrderBook extends OrderBook {
   }
 
   override subscribe(clobTokenIds: string[]) {
-    console.log(`[ReplayOrderBook] subscribe: ids=[${clobTokenIds.join(", ")}]`);
+    replayDebug(`[ReplayOrderBook] subscribe: ids=[${clobTokenIds.join(", ")}]`);
     this.assetIds = clobTokenIds;
     this.books.clear();
     this.tickSizes.clear();
@@ -27,11 +31,11 @@ export class ReplayOrderBook extends OrderBook {
 
     // Apply buffered data if we have it
     if (this.lastUp) {
-        console.log(`[ReplayOrderBook] applying buffered UP snapshot`);
+        replayDebug(`[ReplayOrderBook] applying buffered UP snapshot`);
         this.applyReplaySnapshot(this.assetIds[0]!, this._parseBidsAsks(this.lastUp));
     }
     if (this.lastDown) {
-        console.log(`[ReplayOrderBook] applying buffered DOWN snapshot`);
+        replayDebug(`[ReplayOrderBook] applying buffered DOWN snapshot`);
         this.applyReplaySnapshot(this.assetIds[1]!, this._parseBidsAsks(this.lastDown));
     }
 

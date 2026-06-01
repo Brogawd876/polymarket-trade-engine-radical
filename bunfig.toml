@@ -1,2 +1,3 @@
 [test]
 preload = ["./test/helpers/preload.ts"]
+pathIgnorePatterns = ["ui/**"]

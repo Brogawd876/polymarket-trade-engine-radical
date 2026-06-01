@@ -1,3 +1,4 @@
+/** [IMPORTED LEGACY VARIANT]: ci-repro snapshot **/
 import { lateEntry } from "./late-entry.ts";
 import type { Strategy } from "./types.ts";
 
@@ -11,3 +12,4 @@ export const hyperAggressive: Strategy = async (ctx) => {
         minRemainingSec: 0
     });
 };
+

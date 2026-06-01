@@ -1,6 +1,7 @@
+/** [IMPORTED LEGACY VARIANT]: master snapshot **/
 import type { OrderRequest, Strategy, StrategyContext } from "./types.ts";
-import { Env } from "../../utils/config.ts";
-import { digitalCallProbability } from "../../utils/math.ts";
+import { Env } from "../../../../utils/config.ts";
+import { digitalCallProbability } from "../../../../utils/math.ts";
 
 export interface FairValueMakerConfig {
   /** If true, bypasses 'Quote Hygiene' (early aborts on disagreement and price bounding). Use for backtesting only. */
@@ -497,3 +498,4 @@ function flowAllowsSide(
     : flow.cvd10s.down - flow.cvd10s.up;
   return cvd >= config.minCvd10s;
 }
+

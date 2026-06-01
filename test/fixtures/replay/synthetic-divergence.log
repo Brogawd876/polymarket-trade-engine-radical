@@ -1,0 +1,9 @@
+{"ts":1778941675294,"type":"slot","action":"start","slug":"btc-updown-5m-synthetic-divergence","startTime":1778941675293,"endTime":1778942100000,"strategy":"simulation"}
+{"ts":1778941675295,"type":"orderbook_snapshot","up":{"bids":[[0.50,100]],"asks":[[0.51,100]]},"down":{"bids":[[0.49,100]],"asks":[[0.50,100]]}}
+{"ts":1778941675296,"type":"ticker","assetPrice":77971.00,"binancePrice":77971.00,"coinbasePrice":78100.00,"divergence":129.0}
+{"ts":1778941676296,"type":"ticker","assetPrice":77971.00,"binancePrice":77971.00,"coinbasePrice":78100.00,"divergence":129.0}
+{"ts":1778941677296,"type":"ticker","assetPrice":77971.00,"binancePrice":77971.00,"coinbasePrice":78100.00,"divergence":129.0}
+{"ts":1778941678296,"type":"ticker","assetPrice":77971.00,"binancePrice":77971.00,"coinbasePrice":78100.00,"divergence":129.0}
+{"ts":1778941679296,"type":"ticker","assetPrice":77971.00,"binancePrice":77971.00,"coinbasePrice":78100.00,"divergence":129.0}
+{"ts":1778941680296,"type":"ticker","assetPrice":77971.00,"binancePrice":77971.00,"coinbasePrice":78100.00,"divergence":129.0}
+{"ts":1778942100000,"type":"slot","action":"end","slug":"btc-updown-5m-synthetic-divergence"}

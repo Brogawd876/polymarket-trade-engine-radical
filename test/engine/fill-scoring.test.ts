@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { ConservativeFillScorer, type ScoreFillOptions } from "../../engine/replay/fill-scoring.ts";
+import { buildL2EventIndex, getIndexedL2Window } from "../../engine/strategy-lab.ts";
 import type { ProfitEventEnvelope } from "../../engine/event-store/events.ts";
 
 function mockEvent(type: string, tsMs: number, payload: any): ProfitEventEnvelope {
@@ -259,5 +260,24 @@ describe("ConservativeFillScorer", () => {
     // After sort: book at 1002 first, trade at 1005 second
     expect(result.verdict).toBe("trade_through_fill");
     expect(result.fillTsMs).toBe(1005);
+  });
+
+  it("indexed L2 token window preserves full-array scoring verdicts", () => {
+    const events = [
+      mockEvent("market_trade", 1001, { tokenId: "tokenB", price: 0.01, shares: 1000 }),
+      mockEvent("market_book_snapshot", 1002, { tokenId: "tokenA", side: "UP", bestBid: 0.50, bestAsk: 0.52 }),
+      mockEvent("market_trade", 1003, { tokenId: "tokenA", price: 0.49, shares: 10 }),
+      mockEvent("market_book_snapshot", 2003, { tokenId: "tokenA", side: "UP", bestBid: 0.47, bestAsk: 0.49 }),
+    ];
+    const full = scorer.evaluate(baseOrder, events);
+    const index = buildL2EventIndex(events);
+    const window = getIndexedL2Window(index, "tokenA", baseOrder.placedTsMs);
+    const indexed = scorer.evaluate({ ...baseOrder, skipSort: true }, window);
+
+    expect(indexed.verdict).toBe(full.verdict);
+    expect(indexed.fillTsMs).toBe(full.fillTsMs);
+    expect(indexed.markouts["1s"]).toBe(full.markouts["1s"]);
+    expect(indexed.adverseSelection).toBe(full.adverseSelection);
+    expect(window.every((event) => event.payload.tokenId === "tokenA")).toBe(true);
   });
 });

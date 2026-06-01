@@ -118,10 +118,10 @@ export function isSimFilled(
   order: { action: "buy" | "sell"; price: number; shares: number },
   book: BookSnapshot,
 ): boolean {
-  // Deprecated: optimistic buffer logic is replaced by stateful queue depletion in SimUserChannel.
-  // We now force pessimistic mode universally to prevent fake simulated edge.
-  const multiplier = 10;
-  const hurdle = 0.01;
+  // Snapshot-only fallback for legacy sim tests. Full replay/conservative paths
+  // use SimUserChannel's stateful queue-depletion model when book depth is available.
+  const multiplier = 1;
+  const hurdle = 0.0;
 
   const requiredLiquidity = order.shares * order.price * multiplier;
 

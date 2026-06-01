@@ -1,6 +1,7 @@
+/** [IMPORTED LEGACY VARIANT]: live snapshot **/
 import type { Strategy, StrategyContext } from "./types.ts";
-import { Env } from "../../utils/config.ts";
-import { digitalCallProbability } from "../../utils/math.ts";
+import { Env } from "../../../../utils/config.ts";
+import { digitalCallProbability } from "../../../../utils/math.ts";
 
 export interface FairValueMakerConfig {
   shares?: number;
@@ -288,3 +289,4 @@ function flowAllowsSide(
     : flow.cvd10s.down - flow.cvd10s.up;
   return cvd >= config.minCvd10s;
 }
+

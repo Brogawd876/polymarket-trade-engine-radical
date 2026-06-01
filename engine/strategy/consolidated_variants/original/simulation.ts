@@ -1,5 +1,6 @@
+/** [IMPORTED LEGACY VARIANT]: original snapshot **/
 import type { Strategy } from "./types.ts";
-import { Env } from "../../utils/config.ts";
+import { Env } from "../../../../utils/config.ts";
 
 // ---------------------------------------------------------------------------
 // Simulation Strategy
@@ -135,3 +136,4 @@ export const simulationStrategy: Strategy = async (ctx) => {
     for (const t of timers) ctx.clock.clearTimeout(t);
   };
 };
+

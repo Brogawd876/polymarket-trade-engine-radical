@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+.git/
+data/
+logs/
+archive/
+*.log
+*.ndjson
+*.lockb
+*.lock

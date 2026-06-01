@@ -51,12 +51,51 @@ describe("StrategyLabBatchManager", () => {
     });
   });
 
+  test("rejects replay logs that end before market open without terminal data", async () => {
+    const incompletePremarketReplay = [
+      JSON.stringify({
+        ts: 1780002700000,
+        type: "slot",
+        action: "start",
+        slug: "btc-updown-5m-1780002900",
+        startTime: 1780002700000,
+        endTime: 1780003200000,
+        strategy: "simulation",
+      }),
+      JSON.stringify({
+        ts: 1780002700100,
+        type: "orderbook_snapshot",
+        up: { bids: [[0.5, 10]], asks: [[0.51, 10]] },
+        down: { bids: [[0.49, 10]], asks: [[0.5, 10]] },
+      }),
+      JSON.stringify({
+        ts: 1780002700200,
+        type: "slot",
+        action: "end",
+        slug: "btc-updown-5m-1780002900",
+      }),
+    ].join("\n");
+
+    await withTempLog("early-bird-btc-updown-5m-1780002900.log", incompletePremarketReplay, async (file) => {
+      const manager = new StrategyLabBatchManager();
+      await expect(manager.createBatch({
+        strategies: ["simulation"],
+        files: [file],
+      })).rejects.toThrow(/ended before market open/);
+    });
+  });
+
   test("runs one strategy on one fixture and returns PnL/result counts", async () => {
     const manager = new StrategyLabBatchManager();
     const batch = await manager.createBatch({
       strategies: ["simulation"],
       files: [join(FIXTURES_DIR, "filled-order.log")],
     });
+
+    const initialProgress = manager.getBatchProgress(batch.id);
+    expect(initialProgress?.id).toBe(batch.id);
+    expect(initialProgress?.totalRuns).toBe(1);
+    expect("runs" in (initialProgress as unknown as Record<string, unknown>)).toBe(false);
 
     const completed = await waitForBatch(manager, batch.id);
     expect(completed.state).toBe("completed");

@@ -336,6 +336,29 @@ function resolveConfig(config: Record<string, unknown>): Required<LateEntryConfi
   };
 }
 
+function liveResolutionPrice(ctx: StrategyContext): number | undefined {
+  const resolution = ctx.resolution?.latest?.();
+  if (!resolution) return undefined;
+  if (resolution.kind !== "live") return undefined;
+  if (resolution.quality !== "live") return undefined;
+  if (
+    resolution.stalenessStatus === "stale" ||
+    resolution.stalenessStatus === "missing" ||
+    resolution.stalenessStatus === "degraded"
+  ) {
+    return undefined;
+  }
+  return Number.isFinite(resolution.price) ? resolution.price : undefined;
+}
+
+function strategyBtcPrice(ctx: StrategyContext): number | undefined {
+  return liveResolutionPrice(ctx) ?? ctx.ticker.price ?? (ctx.ticker as unknown as { assetPrice?: number }).assetPrice;
+}
+
+function strategyDivergence(ctx: StrategyContext): number | null {
+  return ctx.predictive?.aggregate?.latest()?.divergenceAbs ?? ctx.ticker.divergence ?? null;
+}
+
 function checkEntry(params: {
   remaining: number;
   btcPrice: number;
@@ -368,6 +391,7 @@ function checkEntry(params: {
 
   const gap = btcPrice - priceToBeat;
   const absGap = Math.abs(gap);
+  if (gap === 0) return null;
   const divergence = params.divergence ?? Infinity;
   const effectiveAtr = atr ?? 0;
   const effectiveGapSafety = gapSafety ?? absGap;
@@ -392,11 +416,12 @@ function checkEntry(params: {
     divergence <= config.maxDivergence &&
     effectivePeakGapRatio >= config.minPeakGapRatio
   ) {
-    const upCertain = up != null && up.price > config.certaintyPrice;
-    const downCertain = down != null && down.price > config.certaintyPrice;
+    const sideFromResolution: "UP" | "DOWN" = gap > 0 ? "UP" : "DOWN";
+    const upCertain = sideFromResolution === "UP" && up != null && up.price > config.certaintyPrice;
+    const downCertain = sideFromResolution === "DOWN" && down != null && down.price > config.certaintyPrice;
 
     if (upCertain || downCertain) {
-      const side: "UP" | "DOWN" = upCertain ? "UP" : "DOWN";
+      const side = sideFromResolution;
       const info = (side === "UP" ? up : down)!;
 
       // --- Imbalance Check ---
@@ -510,7 +535,7 @@ function checkStopLoss(
   state.position = null;
 
   const sellPrice =
-    bestBid !== null ? bestBid + 0.01 : pos.stopLossPrice - 0.01;
+    bestBid !== null ? bestBid : Math.max(0.01, pos.stopLossPrice - 0.01);
 
   ctx.log(
     `[${ctx.slug}] late-entry: stop-loss triggered — SELL ${pos.side} @ ${sellPrice}`,
@@ -524,8 +549,9 @@ function checkStopLoss(
         action: "sell",
         price: sellPrice,
         shares: pos.shares,
+        orderType: "FOK",
       },
-      expireAtMs: ctx.slotEndMs,
+      expireAtMs: ctx.clock.nowMs() + 1_000,
       onFilled() {
         ctx.log(
           `[${ctx.slug}] late-entry: stop-loss SELL filled @ ${sellPrice}`,
@@ -587,25 +613,32 @@ export async function lateEntry(ctx: StrategyContext, configOverride: LateEntryC
   };
   const indicators = new Indicators();
   const config = resolveConfig({ ...ctx.strategyConfig, ...configOverride });
+  let released = false;
+  const releaseOnce = () => {
+    if (released) return;
+    released = true;
+    releaseLock();
+  };
 
   const tickInterval = ctx.clock.setInterval(() => {
     const remaining = Math.floor((ctx.slotEndMs - ctx.clock.nowMs()) / 1000);
 
     if (remaining <= 0) {
       ctx.clock.clearInterval(tickInterval);
+      releaseOnce();
       return;
     }
 
     if (remaining <= 5 && !state.position) {
       ctx.clock.clearInterval(tickInterval);
-      releaseLock();
+      releaseOnce();
       return;
     }
 
     const priceToBeat = ctx.getMarketResult()?.openPrice ?? null;
     if (!priceToBeat) return;
 
-    const btcPrice = ctx.ticker.price ?? (ctx.ticker as unknown as { assetPrice?: number }).assetPrice;
+    const btcPrice = strategyBtcPrice(ctx);
     const gap = btcPrice !== undefined ? btcPrice - priceToBeat : null;
 
     indicators.tick(gap, btcPrice, ctx.clock.nowMs());
@@ -625,7 +658,7 @@ export async function lateEntry(ctx: StrategyContext, configOverride: LateEntryC
           atr: indicators.atr,
           rtv: indicators.rtv,
           gapSafety: gap !== null ? indicators.gapSafety(gap) : null,
-          divergence: ctx.ticker.divergence,
+          divergence: strategyDivergence(ctx),
           peakGapRatio: gap !== null ? indicators.peakGapRatio(gap) : null,
           flow: ctx.orderFlow?.latest(),
           config,

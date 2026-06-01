@@ -1,6 +1,6 @@
 import { parseArgs } from "util";
 import { spawn } from "child_process";
-import { mkdirSync, existsSync, writeFileSync, readFileSync, readdirSync } from "fs";
+import { mkdirSync, existsSync, writeFileSync, readFileSync, readdirSync, appendFileSync } from "fs";
 import * as path from "path";
 import { summarizeCorpusQuality } from "../engine/replay/corpus-quality.ts";
 import type { PairManifest } from "../engine/replay/pair-manifest.ts";
@@ -14,6 +14,10 @@ const { values } = parseArgs({
     "out-dir": { type: "string" },
     variants: { type: "string", multiple: true, default: ["late-entry", "late-entry-flow-aware", "fair-value-maker"] },
     "strategy-lab-timeout-ms": { type: "string", default: "180000" },
+    "batch-size": { type: "string", default: "6" },
+    "debug-full-batch": { type: "boolean", default: false },
+    "allow-partial": { type: "boolean", default: false },
+    "retry-failed": { type: "boolean", default: false },
     "min-valid-pairs": { type: "string", default: "1" },
     "fail-on-readiness-block": { type: "boolean", default: false },
     "dry-run": { type: "boolean" },
@@ -64,6 +68,7 @@ async function main() {
   const readinessJson = path.join(outDir, "readiness.json");
   const readinessMd = path.join(outDir, "readiness.md");
   const corpusJson = path.join(outDir, "corpus-summary.json");
+  const artifactDir = path.join(outDir, "calibration-models");
   const finalMd = path.join(outDir, "final-report.md");
 
   if (values["dry-run"]) {
@@ -73,19 +78,53 @@ async function main() {
   }
 
   console.log("\n=== STEP 1: Running Strategy Lab and Extracting Calibration Records ===");
-  const slArgs = [
-    "scripts/run-strategy-lab-paired-corpus.ts",
-    "--pairs-dir", pairsDir,
-    "--timeout-ms", values["strategy-lab-timeout-ms"] as string,
-    "--out-json", slJson,
-    "--out-calibration-jsonl", calJsonl,
-    "--variants", ...values.variants as string[]
-  ];
-  
-  let res = await runProcess("bun", slArgs);
-  if (res.code !== 0) {
-    console.error("Strategy lab failed.");
-    process.exit(1);
+  let res: { code: number | null };
+  if (values["debug-full-batch"]) {
+    const slArgs = [
+      "scripts/run-strategy-lab-paired-corpus.ts",
+      "--pairs-dir", pairsDir,
+      "--timeout-ms", values["strategy-lab-timeout-ms"] as string,
+      "--out-json", slJson,
+      "--out-calibration-jsonl", calJsonl,
+      "--variants", ...values.variants as string[]
+    ];
+    if (values["allow-partial"]) slArgs.push("--allow-partial");
+    res = await runProcess("bun", slArgs);
+    if (res.code !== 0) {
+      console.error("Strategy lab failed.");
+      process.exit(1);
+    }
+  } else {
+    writeFileSync(calJsonl, "", "utf-8");
+    const summaries: unknown[] = [];
+    for (const variant of values.variants as string[]) {
+      const leanOutDir = path.join(outDir, "lean", variant.replace(/[^a-zA-Z0-9._-]/g, "_"));
+      const leanArgs = [
+        "scripts/run-lean-calibration.ts",
+        "--pairs-dir", pairsDir,
+        "--out-dir", leanOutDir,
+        "--timeout-ms", values["strategy-lab-timeout-ms"] as string,
+        "--batch-size", values["batch-size"] as string,
+        "--variant", variant,
+      ];
+      if (values["allow-partial"]) leanArgs.push("--allow-partial");
+      if (values["retry-failed"]) leanArgs.push("--retry-failed");
+      res = await runProcess("bun", leanArgs);
+      if (res.code !== 0) {
+        console.error(`Lean Strategy Lab failed for ${variant}.`);
+        process.exit(1);
+      }
+      const safeVariant = variant.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const variantJsonl = path.join(leanOutDir, `calibration-${safeVariant}.jsonl`);
+      const variantSummary = path.join(leanOutDir, `summary-${safeVariant}.json`);
+      if (existsSync(variantJsonl)) {
+        appendFileSync(calJsonl, readFileSync(variantJsonl, "utf-8"));
+      }
+      if (existsSync(variantSummary)) {
+        summaries.push(JSON.parse(readFileSync(variantSummary, "utf-8")));
+      }
+    }
+    writeFileSync(slJson, JSON.stringify({ mode: "lean", variants: values.variants, summaries }, null, 2), "utf-8");
   }
 
   if (!existsSync(calJsonl)) {
@@ -138,6 +177,28 @@ async function main() {
     console.error("Failed to read readiness json for summary.");
   }
 
+  const artifactPaths: string[] = [];
+  if (readinessObj?.globalDecision === "paper_candidate") {
+    console.log("\n=== STEP 4B: Writing Calibration Artifacts ===");
+    for (const variant of values.variants as string[]) {
+      const artifactArgs = [
+        "scripts/generate-calibration-artifact.ts",
+        "--variant", variant,
+        "--audit-json", auditJson,
+        "--readiness-json", readinessJson,
+        "--calibration-jsonl", calJsonl,
+        "--out-dir", artifactDir,
+      ];
+      const artifactResult = await runProcess("bun", artifactArgs);
+      if (artifactResult.code === 0) {
+        artifactPaths.push(path.join(artifactDir, variant.replace(/[^a-zA-Z0-9._-]/g, "_")));
+      } else {
+        console.error(`Calibration artifact generation failed for ${variant}.`);
+        process.exit(1);
+      }
+    }
+  }
+
   // Hardcode defaults based on prompt 8R
   const thresholds = { minTotalRecords: 5000, minTradePrintBackedRecords: 2000 };
   const quality = summarizeCorpusQuality(manifests, records, thresholds);
@@ -152,6 +213,9 @@ async function main() {
   const isReady = readinessObj?.globalDecision === "paper_candidate";
   if (isReady) {
     md += `- The corpus IS READY for tuning.\n`;
+    if (artifactPaths.length > 0) {
+      md += `- Calibration artifacts were written under: ${artifactDir}\n`;
+    }
   } else {
     md += `- The corpus IS NOT READY for tuning.\n`;
     md += `- Readiness remains blocked.\n`;

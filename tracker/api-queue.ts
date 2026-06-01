@@ -56,6 +56,8 @@ export class APIQueue {
   }
 
   async queueEventDetails(slug: string) {
+    if (this.eventResponse.has(slug)) return;
+    
     const res = await fetchWithRetry(
       `https://gamma-api.polymarket.com/events?slug=${slug}`,
       {
@@ -67,7 +69,22 @@ export class APIQueue {
       },
     );
     const event: EventResponse = ((await res.json()) as any[])[0];
-    this.eventResponse.set(slug, event);
+    if (event) {
+      this.eventResponse.set(slug, event);
+    }
+  }
+
+  /**
+   * Proactively pre-fetch metadata for future rounds to ensure zero-latency 
+   * transitions when the clock hits the top of the slot.
+   */
+  async prefetchFutureRounds(lookahead = 6) {
+    const { getSlug } = await import("../utils/slot");
+    const slugs = Array.from({ length: lookahead }, (_, i) => getSlug(i + 1));
+    
+    await Promise.allSettled(
+      slugs.map(slug => this.queueEventDetails(slug))
+    );
   }
 
   queueMarketPrice(slot: Slot): { cancel: () => void } {

@@ -4,6 +4,7 @@ import { ReplayRunner, VirtualClock, type TelemetryEvent, type TelemetrySink } f
 import { listStrategyVariants, resolveStrategySelection, type StrategyVariant } from "./strategy/index.ts";
 import { validateReplayFixture } from "./server/helpers/replay-fixtures.ts";
 import { calculateBrierScore, calculateLogLoss } from "../utils/math.ts";
+import { log } from "./log.ts";
 import {
   appendSettlementReference,
   calculateMarkouts,
@@ -30,6 +31,10 @@ export type StrategyLabBatchRequest = {
   riskMode?: CounterfactualRiskMode;
   bypassReasons?: string[];
   continuousBankroll?: boolean;
+  /** Optional callback invoked after each run completes (before evidence is stripped). */
+  onRunComplete?: (run: StrategyLabRunResult) => void;
+  /** Suppress replay console/file logs. Does not affect telemetry or calibration evidence. */
+  quiet?: boolean;
 };
 
 export type ConservativeFillEvidencePoint = {
@@ -65,6 +70,8 @@ export type ConservativeFillReport = {
   usableEvidenceCount: number;
   evaluatedFillCount: number;
   eligibleFillCount: number;
+  confirmedFillCount: number;
+  rejectedFillCount: number;
   conservativeFillWarning?: string;
   evidence?: ConservativeFillEvidencePoint[];
 };
@@ -137,6 +144,10 @@ export type StrategyLabVariantSummary = {
   avgPnl: number | null;
   bestPnl: number | null;
   worstPnl: number | null;
+  conservativeAdjustedTotalPnl: number;
+  conservativeAdjustedAvgPnl: number | null;
+  conservativeAdjustedBestPnl: number | null;
+  conservativeAdjustedWorstPnl: number | null;
   blocked: number;
   problems: number;
   brierScore: number | null;
@@ -155,6 +166,8 @@ export type StrategyLabVariantSummary = {
     touchOnlyCount: number;
     probableFillCount: number;
     tradeThroughFillCount: number;
+    confirmedFillCount: number;
+    rejectedFillCount: number;
     unknownInsufficientDataCount: number;
     usableEvidenceRate: number | null;
     usableEvidenceCount: number;
@@ -186,6 +199,10 @@ export type StrategyLabBatchSummary = {
   avgPnl: number | null;
   bestPnl: number | null;
   worstPnl: number | null;
+  conservativeAdjustedTotalPnl: number;
+  conservativeAdjustedAvgPnl: number | null;
+  conservativeAdjustedBestPnl: number | null;
+  conservativeAdjustedWorstPnl: number | null;
   blocked: number;
   problems: number;
   byStrategy: StrategyLabVariantSummary[];
@@ -207,14 +224,40 @@ export type StrategyLabBatch = {
   riskMode?: CounterfactualRiskMode;
   bypassReasons?: string[];
   continuousBankroll?: boolean;
+  /** Optional callback invoked after each run completes (before evidence is stripped). */
+  onRunComplete?: (run: StrategyLabRunResult) => void;
+  quiet?: boolean;
   error?: string;
 };
 
-class CollectingTelemetrySink implements TelemetrySink {
+export type StrategyLabBatchProgress = {
+  id: string;
+  state: StrategyLabBatchState;
+  totalRuns: number;
+  completedRuns: number;
+  failedRuns: number;
+  canceledRuns: number;
+  currentSlug: string | null;
+  updatedAtMs: number;
+};
+
+const CALIBRATION_RELEVANT_TELEMETRY = new Set<TelemetryEvent["type"]>([
+  "DECISION_FEATURE_SNAPSHOT",
+  "ORDER_INTENT",
+  "RISK_DECISION",
+  "ORDER_LIFECYCLE",
+  "ROUND_RESOLUTION",
+  "ROUND_PNL",
+  "SESSION_PNL",
+]);
+
+class CalibrationTelemetrySink implements TelemetrySink {
   events: TelemetryEvent[] = [];
 
   push(event: TelemetryEvent): void {
-    this.events.push(event);
+    if (CALIBRATION_RELEVANT_TELEMETRY.has(event.type)) {
+      this.events.push(event);
+    }
   }
 }
 
@@ -262,6 +305,8 @@ const EMPTY_EXECUTION_SUMMARY: ExecutionQualitySummary = {
     usableEvidenceCount: 0,
     evaluatedFillCount: 0,
     eligibleFillCount: 0,
+    confirmedFillCount: 0,
+    rejectedFillCount: 0,
     evidence: [],
   },
 };
@@ -291,6 +336,10 @@ function emptySummary(totalRuns: number): StrategyLabBatchSummary {
     avgPnl: null,
     bestPnl: null,
     worstPnl: null,
+    conservativeAdjustedTotalPnl: 0,
+    conservativeAdjustedAvgPnl: null,
+    conservativeAdjustedBestPnl: null,
+    conservativeAdjustedWorstPnl: null,
     blocked: 0,
     problems: 0,
     byStrategy: [],
@@ -302,7 +351,7 @@ export function deriveResultFromEvents(
   base: StrategyLabRunResult,
   events: TelemetryEvent[],
   replayReferences: ReferencePricePoint[] = [],
-  l2Events: any[] = [],
+  l2Events: any[] | L2EventIndex = [],
 ): StrategyLabRunResult {
   const result: StrategyLabRunResult = {
     ...base,
@@ -452,7 +501,9 @@ export function deriveResultFromEvents(
   const scorer = new ConservativeFillScorer();
   const cFill = result.execution.conservativeFill;
 
-  if (l2Events.length > 0) {
+  const l2Available = Array.isArray(l2Events) ? l2Events.length > 0 : l2Events.totalEvents > 0;
+
+  if (l2Available) {
     cFill.conservativeFillEvidenceAvailable = true;
     cFill.conservativeFillEvidenceSource = "raw_l2_event_store";
   } else {
@@ -470,8 +521,9 @@ export function deriveResultFromEvents(
     const conservativeMarkout30s: number[] = [];
     const scorerAdverse: boolean[] = [];
 
-    // Optimization: sort L2 events once
-    const sortedL2 = [...l2Events].sort((a, b) => (a.processedTsMs ?? a.receivedTsMs) - (b.processedTsMs ?? b.receivedTsMs));
+    const sortedL2 = Array.isArray(l2Events)
+      ? [...l2Events].sort(l2EventTimeComparator)
+      : l2Events;
 
     if (fillEvents.length === 0) {
       cFill.conservativeFillWarning = "no_eligible_fills";
@@ -514,6 +566,10 @@ export function deriveResultFromEvents(
 
       cFill.evaluatedFillCount++;
 
+      const scorerEvents = Array.isArray(sortedL2)
+        ? sortedL2
+        : getIndexedL2Window(sortedL2, intent.tokenId, intent.createdAtMs);
+
       const scorerResult = scorer.evaluate({
         orderId: fill.orderId ?? fill.intentId ?? "unknown",
         tokenId: intent.tokenId,
@@ -523,7 +579,7 @@ export function deriveResultFromEvents(
         shares: fill.shares,
         placedTsMs: intent.createdAtMs,
         skipSort: true,
-      }, sortedL2);
+      }, scorerEvents);
 
       if (!cFill.evidence) cFill.evidence = [];
       cFill.evidence.push({
@@ -544,6 +600,11 @@ export function deriveResultFromEvents(
       });
 
       cFill.conservativeFillVerdictCounts[scorerResult.verdict] = (cFill.conservativeFillVerdictCounts[scorerResult.verdict] ?? 0) + 1;
+      if (scorerResult.verdict === "probable_fill" || scorerResult.verdict === "trade_through_fill") {
+        cFill.confirmedFillCount++;
+      } else if (scorerResult.verdict === "no_fill" || scorerResult.verdict === "touch_only") {
+        cFill.rejectedFillCount++;
+      }
       
       if (scorerResult.verdict !== "unknown_insufficient_data") {
         cFill.usableEvidenceCount++;
@@ -571,6 +632,15 @@ export function deriveResultFromEvents(
 
   const wasPredictiveWin = result.direction !== null && filledSides.some(side => side === result.direction);
   const hadWrongDirectionalFill = result.direction !== null && filledSides.some(side => side !== result.direction);
+  const positivePnlUnconfirmed =
+    cFill.conservativeFillEvidenceAvailable &&
+    cFill.eligibleFillCount > 0 &&
+    cFill.confirmedFillCount === 0 &&
+    cFill.rejectedFillCount > 0 &&
+    pnl > 0;
+  if (positivePnlUnconfirmed) {
+    cFill.conservativeFillWarning = "optimistic_pnl_rejected_by_l2";
+  }
 
   result.execution = {
     fillRate: result.counts.intents > 0 ? result.counts.fills / result.counts.intents : null,
@@ -594,7 +664,7 @@ export function deriveResultFromEvents(
 
   if (result.counts.blocked > 0 && result.counts.fills === 0) result.verdict = "blocked";
   else if (result.counts.intents === 0 && result.counts.fills === 0) result.verdict = "no_trade";
-  else if (pnl > 0) result.verdict = wasPredictiveWin && !hadWrongDirectionalFill ? "win" : "flat"; // Rebate-only or mixed-side wins are not counted as directional skill.
+  else if (pnl > 0) result.verdict = !positivePnlUnconfirmed && wasPredictiveWin && !hadWrongDirectionalFill ? "win" : "flat"; // Rebate-only, mixed-side, or L2-rejected wins are not counted as directional skill.
   else if (pnl < 0) result.verdict = "loss";
   else result.verdict = "flat";
   result.pnl = parseFloat(pnl.toFixed(4));
@@ -606,6 +676,8 @@ function recomputeSummary(batch: StrategyLabBatch): StrategyLabBatchSummary {
   const pnlRuns = completedRuns.filter(run => typeof run.pnl === "number") as Array<StrategyLabRunResult & { pnl: number }>;
   const wins = completedRuns.filter(run => run.verdict === "win").length;
   const totalPnl = parseFloat(pnlRuns.reduce((sum, run) => sum + run.pnl, 0).toFixed(4));
+  const adjustedPnls = pnlRuns.map(conservativeAdjustedPnl);
+  const adjustedTotalPnl = parseFloat(adjustedPnls.reduce((sum, pnl) => sum + pnl, 0).toFixed(4));
   const byStrategy = summarizeByStrategy(batch.runs);
 
   return {
@@ -618,11 +690,28 @@ function recomputeSummary(batch: StrategyLabBatch): StrategyLabBatchSummary {
     avgPnl: pnlRuns.length > 0 ? parseFloat((totalPnl / pnlRuns.length).toFixed(4)) : null,
     bestPnl: pnlRuns.length > 0 ? Math.max(...pnlRuns.map(run => run.pnl)) : null,
     worstPnl: pnlRuns.length > 0 ? Math.min(...pnlRuns.map(run => run.pnl)) : null,
+    conservativeAdjustedTotalPnl: adjustedTotalPnl,
+    conservativeAdjustedAvgPnl: adjustedPnls.length > 0 ? parseFloat((adjustedTotalPnl / adjustedPnls.length).toFixed(4)) : null,
+    conservativeAdjustedBestPnl: adjustedPnls.length > 0 ? Math.max(...adjustedPnls) : null,
+    conservativeAdjustedWorstPnl: adjustedPnls.length > 0 ? Math.min(...adjustedPnls) : null,
     blocked: batch.runs.reduce((sum, run) => sum + run.counts.blocked, 0),
     problems: batch.runs.reduce((sum, run) => sum + run.counts.problems, 0),
     byStrategy,
     recommendation: recommendStrategy(byStrategy),
   };
+}
+
+export const recomputeSummaryForTest = recomputeSummary;
+
+function conservativeAdjustedPnl(run: StrategyLabRunResult & { pnl: number }): number {
+  const cFill = run.execution.conservativeFill;
+  const rejectedByL2 =
+    cFill.conservativeFillEvidenceAvailable &&
+    cFill.eligibleFillCount > 0 &&
+    cFill.confirmedFillCount === 0 &&
+    cFill.rejectedFillCount > 0 &&
+    run.pnl > 0;
+  return rejectedByL2 ? 0 : run.pnl;
 }
 
 function summarizeByStrategy(runs: StrategyLabRunResult[]): StrategyLabVariantSummary[] {
@@ -643,6 +732,8 @@ function summarizeByStrategy(runs: StrategyLabRunResult[]): StrategyLabVariantSu
       const blockedVerdicts = completed.filter(run => run.verdict === "blocked").length;
       const tradeCount = completed.filter(run => run.counts.fills > 0 || run.counts.intents > 0).length;
       const totalPnl = parseFloat(pnlRuns.reduce((sum, run) => sum + run.pnl, 0).toFixed(4));
+      const adjustedPnls = pnlRuns.map(conservativeAdjustedPnl);
+      const adjustedTotalPnl = parseFloat(adjustedPnls.reduce((sum, pnl) => sum + pnl, 0).toFixed(4));
       const failed = items.filter(run => run.status === "failed").length;
       const canceled = items.filter(run => run.status === "canceled").length;
       const blocked = items.reduce((sum, run) => sum + run.counts.blocked, 0);
@@ -668,6 +759,8 @@ function summarizeByStrategy(runs: StrategyLabRunResult[]): StrategyLabVariantSu
       const totalEligibleFills = items.reduce((sum, run) => sum + run.execution.conservativeFill.eligibleFillCount, 0);
       const totalEvaluatedFills = items.reduce((sum, run) => sum + run.execution.conservativeFill.evaluatedFillCount, 0);
       const totalUsableFills = items.reduce((sum, run) => sum + run.execution.conservativeFill.usableEvidenceCount, 0);
+      const totalConfirmedFills = items.reduce((sum, run) => sum + run.execution.conservativeFill.confirmedFillCount, 0);
+      const totalRejectedFills = items.reduce((sum, run) => sum + run.execution.conservativeFill.rejectedFillCount, 0);
       const usableEvidenceRate = totalEvaluatedFills > 0 ? totalUsableFills / totalEvaluatedFills : null;
       const avgCmarkout1s = average(completed.map(run => run.execution.conservativeFill.conservativeMarkout1sAvg));
       const avgCmarkout5s = average(completed.map(run => run.execution.conservativeFill.conservativeMarkout5sAvg));
@@ -676,7 +769,7 @@ function summarizeByStrategy(runs: StrategyLabRunResult[]): StrategyLabVariantSu
 
       const tradeRate = completed.length > 0 ? tradeCount / completed.length : null;
       const score = scoreStrategy({
-        totalPnl,
+        totalPnl: adjustedTotalPnl,
         completed: completed.length,
         failed,
         canceled,
@@ -685,7 +778,7 @@ function summarizeByStrategy(runs: StrategyLabRunResult[]): StrategyLabVariantSu
         noTrades,
         blocked,
         problems,
-        worstPnl: pnlRuns.length > 0 ? Math.min(...pnlRuns.map(run => run.pnl)) : null,
+        worstPnl: adjustedPnls.length > 0 ? Math.min(...adjustedPnls) : null,
         tradeRate,
         brierScore: avgBrier,
       });
@@ -710,6 +803,10 @@ function summarizeByStrategy(runs: StrategyLabRunResult[]): StrategyLabVariantSu
         avgPnl: pnlRuns.length > 0 ? parseFloat((totalPnl / pnlRuns.length).toFixed(4)) : null,
         bestPnl: pnlRuns.length > 0 ? Math.max(...pnlRuns.map(run => run.pnl)) : null,
         worstPnl: pnlRuns.length > 0 ? Math.min(...pnlRuns.map(run => run.pnl)) : null,
+        conservativeAdjustedTotalPnl: adjustedTotalPnl,
+        conservativeAdjustedAvgPnl: adjustedPnls.length > 0 ? parseFloat((adjustedTotalPnl / adjustedPnls.length).toFixed(4)) : null,
+        conservativeAdjustedBestPnl: adjustedPnls.length > 0 ? Math.max(...adjustedPnls) : null,
+        conservativeAdjustedWorstPnl: adjustedPnls.length > 0 ? Math.min(...adjustedPnls) : null,
         blocked,
         problems,
         brierScore: avgBrier !== null ? parseFloat(avgBrier.toFixed(6)) : null,
@@ -728,6 +825,8 @@ function summarizeByStrategy(runs: StrategyLabRunResult[]): StrategyLabVariantSu
           touchOnlyCount,
           probableFillCount,
           tradeThroughFillCount,
+          confirmedFillCount: totalConfirmedFills,
+          rejectedFillCount: totalRejectedFills,
           unknownInsufficientDataCount,
           usableEvidenceRate,
           usableEvidenceCount: totalUsableFills,
@@ -796,15 +895,15 @@ function recommendStrategy(summaries: StrategyLabVariantSummary[]): StrategyLabR
   const winner = viable[0]!;
   const readyForPaper =
     winner.paperEligible &&
-    winner.totalPnl > 0 &&
+    winner.conservativeAdjustedTotalPnl > 0 &&
     (winner.tradeRate ?? 0) >= 0.2 &&
     winner.problems === 0 &&
     winner.blocked === 0 &&
-    (winner.worstPnl ?? 0) >= -2;
+    (winner.conservativeAdjustedWorstPnl ?? 0) >= -2;
 
   const rationale = [
     `Ranked #1 by safety-weighted score (${winner.score.toFixed(2)}).`,
-    `Total PnL ${winner.totalPnl >= 0 ? "+" : ""}$${winner.totalPnl.toFixed(2)} across ${winner.completed}/${winner.runs} completed runs.`,
+    `Conservative-adjusted PnL ${winner.conservativeAdjustedTotalPnl >= 0 ? "+" : ""}$${winner.conservativeAdjustedTotalPnl.toFixed(2)} (raw ${winner.totalPnl >= 0 ? "+" : ""}$${winner.totalPnl.toFixed(2)}) across ${winner.completed}/${winner.runs} completed runs.`,
     `Trade rate ${winner.tradeRate == null ? "---" : `${Math.round(winner.tradeRate * 100)}%`} with ${winner.problems} problems and ${winner.blocked} blocked decisions.`,
   ];
 
@@ -828,13 +927,94 @@ function recommendStrategy(summaries: StrategyLabVariantSummary[]): StrategyLabR
 }
 
 function cloneBatch(batch: StrategyLabBatch): StrategyLabBatch {
-  return structuredClone(batch);
+  // onRunComplete is a function — structuredClone can't handle it.
+  // Strip before cloning, restore the reference after.
+  const callback = (batch as any).onRunComplete;
+  (batch as any).onRunComplete = undefined;
+  const cloned = structuredClone(batch);
+  (batch as any).onRunComplete = callback; // restore on original
+  (cloned as any).onRunComplete = callback; // share reference on clone
+  return cloned;
 }
 
 import { createReadStream } from "fs";
 import * as readline from "readline";
 
-async function loadL2Events(path: string): Promise<any[]> {
+export type L2EventIndex = {
+  totalEvents: number;
+  eventsByTokenId: Map<string, any[]>;
+};
+
+function l2EventTs(evt: any): number {
+  return evt.processedTsMs ?? evt.receivedTsMs ?? 0;
+}
+
+function beginQuietReplayLogs(enabled: boolean): () => void {
+  if (!enabled) return () => {};
+  const previousConsoleLog = console.log;
+  const previousMuted = log.muted;
+  console.log = () => {};
+  log.setMuted(true);
+  return () => {
+    console.log = previousConsoleLog;
+    log.setMuted(previousMuted);
+  };
+}
+
+function l2EventTimeComparator(a: any, b: any): number {
+  return l2EventTs(a) - l2EventTs(b);
+}
+
+function l2EventTokenId(evt: any): string | null {
+  const tokenId = evt?.payload?.tokenId;
+  return typeof tokenId === "string" && tokenId.length > 0 ? tokenId : null;
+}
+
+export function buildL2EventIndex(events: any[]): L2EventIndex {
+  const eventsByTokenId = new Map<string, any[]>();
+  for (const evt of events) {
+    const tokenId = l2EventTokenId(evt);
+    if (!tokenId) continue;
+    const list = eventsByTokenId.get(tokenId) ?? [];
+    list.push(evt);
+    eventsByTokenId.set(tokenId, list);
+  }
+  for (const list of eventsByTokenId.values()) {
+    list.sort(l2EventTimeComparator);
+  }
+  return { totalEvents: events.length, eventsByTokenId };
+}
+
+export function getIndexedL2Window(index: L2EventIndex, tokenId: string, placedTsMs: number, maxWaitMs = Number.POSITIVE_INFINITY): any[] {
+  const events = index.eventsByTokenId.get(tokenId) ?? [];
+  if (events.length === 0) return [];
+
+  let low = 0;
+  let high = events.length - 1;
+  let startIndex = events.length;
+  while (low <= high) {
+    const mid = (low + high) >>> 1;
+    const evt = events[mid];
+    const ts = evt ? l2EventTs(evt) : 0;
+    if (ts < placedTsMs) {
+      low = mid + 1;
+    } else {
+      startIndex = mid;
+      high = mid - 1;
+    }
+  }
+
+  if (!Number.isFinite(maxWaitMs)) return events.slice(startIndex);
+
+  const endTs = placedTsMs + maxWaitMs;
+  let endIndex = startIndex;
+  while (endIndex < events.length && l2EventTs(events[endIndex]) <= endTs) {
+    endIndex++;
+  }
+  return events.slice(startIndex, endIndex);
+}
+
+async function loadL2EventIndex(path: string): Promise<L2EventIndex> {
   try {
     const events: any[] = [];
     const rl = readline.createInterface({
@@ -855,10 +1035,11 @@ async function loadL2Events(path: string): Promise<any[]> {
         // Skip malformed lines
       }
     }
-    return events;
+    events.sort(l2EventTimeComparator);
+    return buildL2EventIndex(events);
   } catch (e) {
     console.error(`Failed to load L2 events from ${path}:`, e);
-    return [];
+    return buildL2EventIndex([]);
   }
 }
 
@@ -866,6 +1047,7 @@ export class StrategyLabBatchManager {
   private batches = new Map<string, StrategyLabBatch>();
   private cancelRequested = new Set<string>();
   private currentBots = new Map<string, EarlyBird>();
+  private l2EventIndexCache = new Map<string, Promise<L2EventIndex>>();
 
   listStrategies(): string[] {
     return [...new Set(listStrategyVariants().map(variant => variant.strategy))].sort();
@@ -940,6 +1122,8 @@ export class StrategyLabBatchManager {
       riskMode: request.riskMode,
       bypassReasons: request.bypassReasons,
       continuousBankroll: request.continuousBankroll,
+      onRunComplete: request.onRunComplete,
+      quiet: request.quiet,
     } as any;
     this.batches.set(batch.id, batch);
 
@@ -953,6 +1137,24 @@ export class StrategyLabBatchManager {
   getBatch(batchId: string): StrategyLabBatch | null {
     const batch = this.batches.get(batchId);
     return batch ? cloneBatch(batch) : null;
+  }
+
+  getBatchProgress(batchId: string): StrategyLabBatchProgress | null {
+    const batch = this.batches.get(batchId);
+    if (!batch) return null;
+    const failedRuns = batch.runs.filter((run) => run.status === "failed").length;
+    const canceledRuns = batch.runs.filter((run) => run.status === "canceled").length;
+    const currentRun = batch.runs.find((run) => run.status === "running") ?? null;
+    return {
+      id: batch.id,
+      state: batch.state,
+      totalRuns: batch.progress.totalRuns,
+      completedRuns: batch.progress.completedRuns,
+      failedRuns,
+      canceledRuns,
+      currentSlug: currentRun?.slug ?? null,
+      updatedAtMs: batch.updatedAtMs,
+    };
   }
 
   cancelBatch(batchId: string): StrategyLabBatch | null {
@@ -975,6 +1177,14 @@ export class StrategyLabBatchManager {
     return cloneBatch(batch);
   }
 
+  private loadL2EventIndex(path: string): Promise<L2EventIndex> {
+    const existing = this.l2EventIndexCache.get(path);
+    if (existing) return existing;
+    const pending = loadL2EventIndex(path);
+    this.l2EventIndexCache.set(path, pending);
+    return pending;
+  }
+
   private async runBatch(batchId: string): Promise<void> {
     const batch = this.batches.get(batchId) as any;
     if (!batch || batch.state === "canceled") return;
@@ -990,10 +1200,11 @@ export class StrategyLabBatchManager {
 
       run.status = "running";
       batch.updatedAtMs = Date.now();
+      const restoreReplayLogs = beginQuietReplayLogs(batch.quiet === true);
 
       try {
         const clock = new VirtualClock();
-        const sink = new CollectingTelemetrySink();
+        const sink = new CalibrationTelemetrySink();
         const l2File = batch.l2Files?.[run.file];
         const tokenMapping = l2File 
           ? await extractClobTokenIdsFromRawL2(l2File)
@@ -1048,16 +1259,21 @@ export class StrategyLabBatchManager {
         await new Promise(resolve => setTimeout(resolve, 0));
 
         if ((run.status as StrategyLabRunStatus) !== "canceled") {
-          const l2Events = l2File ? await loadL2Events(l2File) : [];
+          const l2Events = l2File ? await this.loadL2EventIndex(l2File) : buildL2EventIndex([]);
           Object.assign(run, deriveResultFromEvents(run, sink.events, replayReferences, l2Events));
           if (l2File && tokenMapping?.status === "unavailable") {
             const cFill = run.execution.conservativeFill;
+            const mapping = tokenMapping as { status: "unavailable"; reason: "token_mapping_missing" | "token_mapping_ambiguous" };
             if (cFill.eligibleFillCount > 0) {
-              cFill.conservativeFillWarning = tokenMapping.reason;
-              cFill.conservativeFillUnavailableReasons[tokenMapping.reason] =
-                (cFill.conservativeFillUnavailableReasons[tokenMapping.reason] ?? 0) +
+              cFill.conservativeFillWarning = mapping.reason;
+              cFill.conservativeFillUnavailableReasons[mapping.reason] =
+                (cFill.conservativeFillUnavailableReasons[mapping.reason] ?? 0) +
                 cFill.eligibleFillCount;
             }
+          }
+          // Fire the per-run callback before evidence is stripped
+          if (batch.onRunComplete) {
+            batch.onRunComplete(run);
           }
           if (batch.continuousBankroll && run.pnl !== null) {
             variantBalances.set(run.variantLabel, initialBalance + run.pnl);
@@ -1070,10 +1286,20 @@ export class StrategyLabBatchManager {
           run.error = error instanceof Error ? error.message : String(error);
         }
       } finally {
+        restoreReplayLogs();
         this.currentBots.delete(batchId);
         batch.progress.completedRuns = batch.runs.filter((item: StrategyLabRunResult) => item.status !== "queued" && item.status !== "running").length;
-        batch.summary = recomputeSummary(batch);
+        if (!batch.onRunComplete) {
+          batch.summary = recomputeSummary(batch);
+        }
         batch.updatedAtMs = Date.now();
+        // Strip heavy evidence data from completed runs to free memory.
+        // Only strip when onRunComplete is set — the caller has already
+        // extracted the data incrementally. Without it, the old pipeline
+        // needs evidence preserved for batch-level extraction at the end.
+        if (batch.onRunComplete && run.status === "completed" && run.execution?.conservativeFill?.evidence) {
+          run.execution.conservativeFill.evidence = [];
+        }
         await new Promise(resolve => setImmediate(resolve));
       }
     }

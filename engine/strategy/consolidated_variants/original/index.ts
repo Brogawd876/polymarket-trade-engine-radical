@@ -1,3 +1,4 @@
+/** [IMPORTED LEGACY VARIANT]: original snapshot **/
 import type { Strategy } from "./types.ts";
 import { simulationStrategy } from "./simulation.ts";
 import { lateEntry, type LateEntryConfig } from "./late-entry.ts";
@@ -232,3 +233,4 @@ export function resolveStrategySelection(selection: string | undefined): {
 }
 
 export type { Strategy, StrategyContext } from "./types.ts";
+

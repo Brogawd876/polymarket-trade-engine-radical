@@ -127,7 +127,7 @@ async function main() {
         .filter(l => l.trim())
         .map(l => JSON.parse(l)));
       
-      const mappingResult = extractClobTokenIdsFromRawL2(l2FilePath);
+      const mappingResult = await extractClobTokenIdsFromRawL2(l2FilePath);
       if (mappingResult.status === "ok") {
         tokenMapping = {
           upTokenId: mappingResult.tokenIds[0],

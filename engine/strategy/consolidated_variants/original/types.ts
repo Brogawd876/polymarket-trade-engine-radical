@@ -1,9 +1,10 @@
-import type { PendingOrder } from "../market-lifecycle.ts";
-import type { OrderBook } from "../../tracker/orderbook.ts";
-import type { Order, CancelOrderResponse } from "../../utils/trading.ts";
-import type { LogColor } from "../log.ts";
-import type { TickerTracker } from "../../tracker/ticker";
-import type { MarketData } from "../../tracker/api-queue.ts";
+/** [IMPORTED LEGACY VARIANT]: original snapshot **/
+import type { PendingOrder } from "../../../market-lifecycle.ts";
+import type { OrderBook } from "../../../../tracker/orderbook.ts";
+import type { Order, CancelOrderResponse } from "../../../../utils/trading.ts";
+import type { LogColor } from "../../../log.ts";
+import type { TickerTracker } from "../../../../tracker/ticker";
+import type { MarketData } from "../../../../tracker/api-queue.ts";
 import type {
   ResolutionSourceAdapter,
   VenueDataAdapter,
@@ -13,7 +14,7 @@ import type {
   OrderFlowMonitor,
   QuantMonitor,
   Clock,
-} from "../bot-core/data-sources.ts";
+} from "../../../bot-core/data-sources.ts";
 
 export type OrderRequest = {
   req: {
@@ -108,3 +109,4 @@ export type StrategyContext = {
  * similar to the cleanup return in React's useEffect.
  */
 export type Strategy = (ctx: StrategyContext) => Promise<(() => void) | void>;
+

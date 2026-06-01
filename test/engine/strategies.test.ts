@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { avellanedaMaker } from "../../engine/strategy/avellaneda-maker.ts";
 import { calculateSettlementAnchoredFairValue, fairValueMaker } from "../../engine/strategy/fair-value-maker.ts";
+import { resolveStrategySelection } from "../../engine/strategy/index.ts";
 import { lateEntry } from "../../engine/strategy/late-entry.ts";
 import { VirtualClock } from "../../engine/bot-core/replay-runner.ts";
 import type { StrategyContext } from "../../engine/strategy/types.ts";
@@ -78,6 +80,11 @@ describe("Strategy Logic Verification", () => {
     } as Partial<StrategyContext>;
   }
 
+  test("strategy registry resolves aggressive and radical variants", () => {
+    expect(resolveStrategySelection("hyper-aggressive").strategyName).toBe("hyper-aggressive");
+    expect(resolveStrategySelection("radical-hybrid").strategyName).toBe("radical-hybrid");
+  });
+
   function makerBook(upAsk = 0.70, downAsk = 0.70) {
     return {
       bestAskPrice: (side: "UP" | "DOWN") => side === "UP" ? upAsk : downAsk,
@@ -100,7 +107,7 @@ describe("Strategy Logic Verification", () => {
       orderHistory: [],
       pendingOrders: [],
       walletBalanceUsd: 100,
-      strategyConfig: { makerOnly: false },
+      strategyConfig: { makerOnly: false, maxSpendAbs: Number.POSITIVE_INFINITY },
       quant: {
         subscribe: () => () => {},
         latest: () => ({
@@ -151,7 +158,7 @@ describe("Strategy Logic Verification", () => {
       ],
       pendingOrders: [],
       walletBalanceUsd: 100,
-      strategyConfig: { makerOnly: false },
+      strategyConfig: { makerOnly: false, maxSpendAbs: Number.POSITIVE_INFINITY },
       quant: {
         subscribe: () => () => {},
         latest: () => ({
@@ -253,6 +260,44 @@ describe("Strategy Logic Verification", () => {
     const upOrder = postedOrders.find(o => o.req.tokenId === "up-id");
     expect(upOrder).toBeDefined();
     expect(upOrder.req.price).toBeLessThan(0.60);
+    if (cleanup) cleanup();
+  });
+
+  test("fair-value-maker subtracts Polymarket fees from edge by default", async () => {
+    const clock = new VirtualClock();
+    const postedOrders: any[] = [];
+    const ctx: Partial<StrategyContext> = {
+      clock,
+      ...settlementContext(clock, { settlement: 100_000, predictive: 100_043 }),
+      slotEndMs: 1000000,
+      clobTokenIds: ["up-id", "down-id"],
+      orderHistory: [],
+      pendingOrders: [],
+      walletBalanceUsd: 100,
+      strategyConfig: { makerOnly: false, maxSpendAbs: Number.POSITIVE_INFINITY },
+      quant: {
+        latest: () => ({
+          asset: "btc",
+          timestampMs: clock.nowMs(),
+          sigma: 0.20,
+          probabilityUp: 0.65,
+        }),
+        subscribe: () => () => {},
+      } as any,
+      orderBook: {
+        ...makerBook(),
+        getFeeRate: () => 1000,
+      } as any,
+      postOrders: (orders: any) => { postedOrders.push(...orders); },
+      cancelOrders: async () => ({ canceled: [], not_canceled: {} }),
+      log: () => {},
+    };
+
+    const cleanup = await fairValueMaker(ctx as StrategyContext);
+    clock.setNowMs(1000);
+
+    expect(postedOrders).toHaveLength(0);
+
     if (cleanup) cleanup();
   });
 
@@ -647,7 +692,7 @@ describe("Strategy Logic Verification", () => {
       ],
       pendingOrders: [],
       walletBalanceUsd: 100,
-      strategyConfig: { makerOnly: false },
+      strategyConfig: { makerOnly: false, maxSpendAbs: Number.POSITIVE_INFINITY },
       quant: {
         subscribe: () => () => {},
         latest: () => ({
@@ -809,6 +854,126 @@ describe("Strategy Logic Verification", () => {
     clock.setNowMs(2000);
     expect(placed.length).toBeGreaterThan(0);
   });
+
+  test("late-entry only buys the side matching resolution-source gap direction", async () => {
+    const clock = new VirtualClock();
+    const placed: any[] = [];
+    const resolution = {
+      id: "chainlink-live",
+      role: "resolution" as const,
+      source: "chainlink-polygon-btc-usd",
+      sourceType: "chainlink_polygon",
+      asset: "btc" as const,
+      kind: "live" as const,
+      price: 59_000,
+      priceToBeat: 60_000,
+      roundId: "1",
+      clock: { sourceTimestampMs: 0, receivedAtMs: 0, processedAtMs: 0, monotonicReceivedNs: 1n },
+      quality: "live" as const,
+      stalenessStatus: "fresh" as const,
+      freshnessMs: 0,
+      lagMs: 0,
+    };
+
+    const ctx: Partial<StrategyContext> = {
+      clock,
+      slotEndMs: 1000000,
+      clobTokenIds: ["up-id", "down-id"],
+      orderHistory: [],
+      pendingOrders: [],
+      walletBalanceUsd: 100,
+      ticker: { divergence: 0, assetPrice: 70_000 } as any,
+      resolution: {
+        latest: () => resolution,
+        latestAnchor: () => ({ ...resolution, kind: "open", price: 60_000, priceToBeat: 60_000 }),
+        subscribe: () => () => {},
+      } as any,
+      hold: () => () => {},
+      getMarketResult: () => ({ openPrice: 60_000, closePrice: 0, direction: "DOWN", slug: "1" }),
+      orderBook: {
+        bestAskInfo: (side: "UP" | "DOWN") => side === "UP"
+          ? { price: 0.70, liquidity: 100 }
+          : { price: 0.30, liquidity: 100 },
+        bestBidInfo: () => ({ price: 0.49, liquidity: 100 }),
+        getTokenId: (side: any) => side === "UP" ? "up-id" : "down-id",
+      } as any,
+      postOrders: (orders: any) => { placed.push(...orders); },
+      cancelOrders: async () => ({ canceled: [], not_canceled: {} }),
+      emergencySells: async () => {},
+      log: () => {},
+    };
+
+    await lateEntry(ctx as StrategyContext, {
+      certaintyPrice: 0.4,
+      minGapSafety: 0,
+      minPeakGapRatio: 0,
+      maxAtr: 999999,
+      maxDivergence: 999999,
+      minLiquidity: 0,
+    });
+    clock.setNowMs(1000);
+
+    expect(placed).toHaveLength(0);
+  });
+
+  test("late-entry stop-loss exits at current bid with FOK", async () => {
+    const clock = new VirtualClock();
+    const placed: any[] = [];
+    const ticker = { divergence: 0, assetPrice: 61_000 } as any;
+    let upAsk = 0.50;
+    let upBid = 0.49;
+
+    const ctx: Partial<StrategyContext> = {
+      clock,
+      slotEndMs: 100000,
+      clobTokenIds: ["up-id", "down-id"],
+      orderHistory: [],
+      pendingOrders: [],
+      walletBalanceUsd: 100,
+      ticker,
+      hold: () => () => {},
+      getMarketResult: () => ({ openPrice: 60_000, closePrice: 0, direction: "UP", slug: "1" }),
+      orderBook: {
+        bestAskInfo: (side: "UP" | "DOWN") => side === "UP"
+          ? { price: upAsk, liquidity: 100 }
+          : { price: 0.30, liquidity: 100 },
+        bestBidInfo: () => ({ price: upBid, liquidity: 100 }),
+        bestBidPrice: (side: "UP" | "DOWN") => side === "UP" ? upBid : 0.29,
+        getTokenId: (side: any) => side === "UP" ? "up-id" : "down-id",
+      } as any,
+      postOrders: (orders: any) => { placed.push(...orders); },
+      cancelOrders: async () => ({ canceled: [], not_canceled: {} }),
+      emergencySells: async () => {},
+      log: () => {},
+    };
+
+    await lateEntry(ctx as StrategyContext, {
+      certaintyPrice: 0.4,
+      minGapSafety: 0,
+      minPeakGapRatio: 0,
+      maxAtr: 999999,
+      maxDivergence: 999999,
+      entryWindowSec: 300,
+      minLiquidity: 0,
+      stopLossPrice: 0.48,
+    });
+    clock.setNowMs(1000);
+
+    const buyOrder = placed.find(o => o.req.tokenId === "up-id" && o.req.action === "buy");
+    expect(buyOrder).toBeDefined();
+    buyOrder.onFilled?.(6);
+
+    upAsk = 0.47;
+    upBid = 0.46;
+    ticker.assetPrice = 59_990;
+    clock.setNowMs(21_000);
+
+    const sellOrder = placed.find(o => o.req.tokenId === "up-id" && o.req.action === "sell");
+    expect(sellOrder).toBeDefined();
+    expect(sellOrder.req.price).toBe(0.46);
+    expect(sellOrder.req.orderType).toBe("FOK");
+    expect(sellOrder.expireAtMs).toBe(22_000);
+  });
   
   test("fair-value-maker dynamic shares sizing (pct_of_balance)", async () => {
     const clock = new VirtualClock();
@@ -848,8 +1013,10 @@ describe("Strategy Logic Verification", () => {
     clock.setNowMs(1000);
     
     const upOrder = postedOrders.find(o => o.req.tokenId === "up-id");
-    // $200 * 10% = $20 notional risk. $20 / 0.64 bidPrice = 31.25 shares.
-    expect(upOrder.req.shares).toBe(31.25);
+    // Default config.maxSpendAbs is $15.00.
+    // $200 * 10% = $20 notional risk, but clamped to $15.
+    // $15 / 0.64 bidPrice = 23.4375 shares.
+    expect(upOrder.req.shares).toBe(23.4375);
 
     if (cleanup) cleanup();
   });
@@ -1006,7 +1173,9 @@ describe("Strategy Logic Verification", () => {
     const sellOrder = postedOrders.find(o => o.req.tokenId === "up-id" && o.req.action === "sell");
     expect(sellOrder).toBeDefined();
     expect(sellOrder.req.shares).toBe(10);
-    expect(sellOrder.req.price).toBeGreaterThanOrEqual(0.97);
+    expect(sellOrder.req.price).toBe(0.97);
+    expect(sellOrder.req.orderType).toBe("FOK");
+    expect(sellOrder.expireAtMs).toBe(1000);
     expect(logs.some(l => l.includes("TAKE-PROFIT UP"))).toBe(true);
 
     if (cleanup) cleanup();
@@ -1060,6 +1229,65 @@ describe("Strategy Logic Verification", () => {
 
     const sellOrder = postedOrders.find(o => o.req.tokenId === "up-id" && o.req.action === "sell");
     expect(sellOrder).toBeUndefined();
+
+    if (cleanup) cleanup();
+  });
+
+  test("fair-value-maker trailing stop exits at bid with FOK", async () => {
+    const clock = new VirtualClock();
+    const postedOrders: any[] = [];
+    let upBid = 0.80;
+
+    const ctx: Partial<StrategyContext> = {
+      clock,
+      ...settlementContext(clock, { settlement: 100_000, predictive: 100_500 }),
+      slotEndMs: 1000000,
+      clobTokenIds: ["up-id", "down-id"],
+      orderHistory: [
+        { tokenId: "up-id", action: "buy", shares: 10, price: 0.50 },
+      ],
+      pendingOrders: [],
+      walletBalanceUsd: 50,
+      strategyConfig: {
+        makerOnly: false,
+        skipHygiene: true,
+        advancedExitsEnabled: true,
+        scaleOutProfitMargin: 0.99,
+        trailingStopActivationMargin: 0.15,
+        trailingStopDrawdownMargin: 0.05,
+      },
+      quant: {
+        latest: () => ({
+          asset: "btc",
+          timestampMs: clock.nowMs(),
+          sigma: 0.10,
+          probabilityUp: 0.99,
+        }),
+        subscribe: () => () => {},
+      } as any,
+      orderBook: {
+        bestBidPrice: (side: "UP" | "DOWN") => side === "UP" ? upBid : 0.30,
+        bestAskPrice: (side: "UP" | "DOWN") => side === "UP" ? upBid + 0.01 : 0.31,
+        getTickSize: () => "0.01",
+        getTokenId: (side: "UP" | "DOWN") => side === "UP" ? "up-id" : "down-id",
+      } as any,
+      postOrders: (orders: any) => { postedOrders.push(...orders); },
+      cancelOrders: async () => ({ canceled: [], not_canceled: {} }),
+      log: () => {},
+    };
+
+    const cleanup = await fairValueMaker(ctx as StrategyContext);
+    clock.setNowMs(1000);
+    postedOrders.length = 0;
+
+    upBid = 0.74;
+    clock.setNowMs(2000);
+
+    const sellOrder = postedOrders.find(o => o.req.tokenId === "up-id" && o.req.action === "sell");
+    expect(sellOrder).toBeDefined();
+    expect(sellOrder.req.price).toBe(0.74);
+    expect(sellOrder.req.orderType).toBe("FOK");
+    expect(sellOrder.expireAtMs).toBe(3000);
 
     if (cleanup) cleanup();
   });
@@ -1121,6 +1349,81 @@ describe("Strategy Logic Verification", () => {
     expect(newBuyUp).toBeUndefined();
 
     if (cleanup) cleanup();
+  });
+
+  test("avellaneda-maker enforces maxSpendAbs against existing position spend", async () => {
+    const clock = new VirtualClock();
+    const postedOrders: any[] = [];
+    const logs: string[] = [];
+
+    const ctx: Partial<StrategyContext> = {
+      clock,
+      ...settlementContext(clock, { settlement: 100_000, predictive: 100_043 }),
+      slotEndMs: 1000000,
+      clobTokenIds: ["up-id", "down-id"],
+      orderHistory: [
+        { tokenId: "up-id", action: "buy", shares: 29, price: 0.50 },
+      ],
+      pendingOrders: [],
+      walletBalanceUsd: 100,
+      strategyConfig: {
+        makerOnly: false,
+        maxSpendAbs: 15.00,
+        minShares: 1,
+        shares: 10,
+      },
+      quant: {
+        latest: () => ({
+          asset: "btc",
+          timestampMs: clock.nowMs(),
+          sigma: 0.20,
+          probabilityUp: 0.75,
+          jumpDetected: false,
+          volatilityRegime: "normal",
+        }),
+        subscribe: () => () => {},
+      } as any,
+      postOrders: (orders: any) => { postedOrders.push(...orders); },
+      cancelOrders: async () => ({ canceled: [], not_canceled: {} }),
+      orderBook: makerBook(),
+      log: (msg: string) => { logs.push(msg); },
+    };
+
+    const cleanup = await avellanedaMaker(ctx as StrategyContext);
+    clock.setNowMs(1000);
+
+    expect(postedOrders.find(o => o.req.tokenId === "up-id" && o.req.action === "buy")).toBeUndefined();
+    expect(logs.some(l => l.includes("maxSpendAbs: UP capped"))).toBe(true);
+
+    if (cleanup) cleanup();
+  });
+
+  test("late-entry releases lifecycle hold when the round expires", async () => {
+    const clock = new VirtualClock();
+    let releaseCount = 0;
+    const ctx: Partial<StrategyContext> = {
+      clock,
+      slotEndMs: 1000,
+      clobTokenIds: ["up-id", "down-id"],
+      orderHistory: [],
+      pendingOrders: [],
+      walletBalanceUsd: 100,
+      strategyConfig: {},
+      ticker: { divergence: 0, assetPrice: 70000 } as any,
+      hold: () => () => { releaseCount += 1; },
+      getMarketResult: () => ({ openPrice: 60000, closePrice: 0, direction: "UP", slug: "1" }),
+      orderBook: makerBook() as any,
+      postOrders: () => {},
+      cancelOrders: async () => ({ canceled: [], not_canceled: {} }),
+      emergencySells: async () => {},
+      log: () => {},
+    };
+
+    await lateEntry(ctx as StrategyContext, { minRemainingSec: 0 });
+    clock.setNowMs(1000);
+    clock.setNowMs(1001);
+
+    expect(releaseCount).toBe(1);
   });
 
 });

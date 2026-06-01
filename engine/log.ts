@@ -19,6 +19,7 @@ function nowIso(): string {
 class Log {
   private readonly _filePath: string;
   private _buffer: string[] = [];
+  private _muted = false;
 
   constructor() {
     mkdirSync("logs", { recursive: true });
@@ -31,10 +32,19 @@ class Log {
   }
 
   write(msg: string, color?: LogColor): void {
+    if (this._muted) return;
     const plain = `[${nowIso()}] ${msg}`;
     const console_line = color ? `${ANSI[color]}${plain}${RESET}` : plain;
     console.log(console_line);
     this._buffer.push(plain + "\n");
+  }
+
+  setMuted(muted: boolean): void {
+    this._muted = muted;
+  }
+
+  get muted(): boolean {
+    return this._muted;
   }
 
   flush(): void {

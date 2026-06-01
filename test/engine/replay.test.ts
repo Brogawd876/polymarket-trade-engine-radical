@@ -204,7 +204,7 @@ describe("ReplayRunner", () => {
             start: async () => {},
             tickOnce: async () => {
               ticks++;
-              if (ticks >= 2) {
+              if (ticks >= 10) {
                 activeLifecycleCount = 0;
                 isShuttingDown = true;
               }
@@ -215,7 +215,7 @@ describe("ReplayRunner", () => {
           const result = await new ReplayRunner(reader, bot, clock).run();
 
           expect(result.completed).toBe(true);
-          expect(result.ticks).toBeGreaterThanOrEqual(2);
+          expect(result.ticks).toBeGreaterThanOrEqual(10);
           expect(reader.isDone()).toBe(true);
         },
     );

@@ -61,14 +61,27 @@ export class ConservativeMakerFillModel {
       };
     }
 
-    if (touched && !this.requireTradeThrough && sizeAheadEstimate !== null && sizeAheadEstimate <= 0) {
+    const exactTradeSize =
+      book.lastTradePrice !== undefined &&
+      book.lastTradePrice !== null &&
+      Math.abs(book.lastTradePrice - order.price) < 1e-9
+        ? book.lastTradeSize ?? 0
+        : 0;
+
+    if (
+      touched &&
+      !this.requireTradeThrough &&
+      sizeAheadEstimate !== null &&
+      sizeAheadEstimate <= 0 &&
+      exactTradeSize >= order.shares - 1e-9
+    ) {
       return {
         filled: true,
         filledShares: order.shares,
         fillProbability: 0.5,
         makerTaker: "maker",
         sizeAheadEstimate,
-        reason: "touch fill allowed with no estimated size ahead",
+        reason: "exact-price trade volume filled resting maker order after queue",
       };
     }
 
@@ -80,7 +93,7 @@ export class ConservativeMakerFillModel {
       makerTaker: makerTaker === "unknown" ? "unknown" : "maker",
       sizeAheadEstimate,
       reason: touched
-        ? "touch is not enough for conservative maker fill"
+        ? "touch is not enough for conservative maker fill without exact trade volume"
         : "maker order did not trade through",
     };
   }

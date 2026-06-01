@@ -70,6 +70,52 @@ describe("ConservativeMakerFillModel", () => {
     expect(result.fillProbability).toBe(0);
   });
 
+  test("touch with queue cleared still needs enough exact-price trade volume for own shares", () => {
+    const model = new ConservativeMakerFillModel({ requireTradeThrough: false });
+    const result = model.evaluate(
+      {
+        action: "buy",
+        side: "UP",
+        price: 0.49,
+        shares: 10,
+        orderType: "GTC",
+        queuePosition: 0,
+      },
+      {
+        bids: [[0.49, 0]],
+        asks: [[0.5, 5]],
+        lastTradePrice: 0.49,
+        lastTradeSize: 5,
+      },
+    );
+
+    expect(result.filled).toBe(false);
+    expect(result.reason).toContain("exact trade volume");
+  });
+
+  test("exact-price trade volume can fill once queue and own size are satisfied", () => {
+    const model = new ConservativeMakerFillModel({ requireTradeThrough: false });
+    const result = model.evaluate(
+      {
+        action: "buy",
+        side: "UP",
+        price: 0.49,
+        shares: 10,
+        orderType: "GTC",
+        queuePosition: 0,
+      },
+      {
+        bids: [[0.49, 0]],
+        asks: [[0.5, 5]],
+        lastTradePrice: 0.49,
+        lastTradeSize: 10,
+      },
+    );
+
+    expect(result.filled).toBe(true);
+    expect(result.reason).toContain("exact-price trade volume");
+  });
+
   test("FOK/FAK marketable orders are classified and depth-checked as taker", () => {
     const book = {
       bids: [[0.5, 2] as [number, number]],

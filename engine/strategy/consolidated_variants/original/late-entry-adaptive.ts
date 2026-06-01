@@ -1,3 +1,4 @@
+/** [IMPORTED LEGACY VARIANT]: original snapshot **/
 import type { Strategy } from "./types.ts";
 import { lateEntry, type LateEntryConfig } from "./late-entry.ts";
 
@@ -53,3 +54,4 @@ export const lateEntryAdaptive: Strategy = async (ctx) => {
 
     return lateEntry(ctx, ADAPTIVE_CONFIG);
 };
+

@@ -1,6 +1,8 @@
 import type { OrderRequest, Strategy, StrategyContext } from "./types.ts";
 import { Env } from "../../utils/config.ts";
 import { digitalCallProbability } from "../../utils/math.ts";
+import { predictIsotonicProbability } from "../replay/isotonic-calibration.ts";
+import type { IsotonicBucket } from "../replay/isotonic-calibration.ts";
 
 export interface AvellanedaMakerConfig {
   /** If true, bypasses 'Quote Hygiene' (early aborts on disagreement and price bounding). Use for backtesting only. */
@@ -38,6 +40,9 @@ export interface AvellanedaMakerConfig {
   maxMakerBidPrice?: number;
   /** Suppress repeated identical exposure-limit rejections for this long. */
   exposureBlockCooldownMs?: number;
+
+  /** Maximum absolute USD to spend on a single side per round. Prevents catastrophic side imbalance. */
+  maxSpendAbs?: number;
 
   // ── v1.3.0 Profit-Selective Controls ────────────────────────────────────────
   /**
@@ -93,7 +98,103 @@ export interface AvellanedaMakerConfig {
    *
    * Range: 0.90–0.99. Default: 0.97.
    */
-  }
+  takeProfitThreshold?: number;
+
+  // ── v3.0.0 Momentum-Confirmed Dynamic Sizing ────────────────────────────────
+  /**
+   * Enable momentum-confirmed dynamic sizing.
+   * Reads the velocity of the predictive composite price (Binance/Coinbase)
+   * over a rolling window and scales sharePct accordingly:
+   * - Strong confirming momentum → scale up to momentumMaxPct
+   * - Contradicting momentum → scale down to momentumMinPct
+   * - Neutral / no data → use base sharePct unchanged
+   */
+  momentumSizingEnabled?: boolean;
+  /** Rolling window (ms) over which to measure price velocity. Default: 5000 (5s). */
+  momentumWindowMs?: number;
+  /** Velocity threshold ($/sec) below which momentum is considered neutral. Default: 2.0 */
+  momentumNeutralThreshold?: number;
+  /** Maximum sharePct when momentum strongly confirms. Default: 0.25 (25%) */
+  momentumMaxPct?: number;
+  /** Minimum sharePct when momentum contradicts. Default: 0.05 (5%) */
+  momentumMinPct?: number;
+
+  // ── v3.2.0 Max Drawdown Kill Switch ─────────────────────────────────────────
+  /**
+   * Enable per-round max drawdown kill switch.
+   * If mark-to-market equity (cash + inventory × bestBid) drops below
+   * startingBalance - maxDrawdownAbs, the bot cancels all orders and
+   * stops trading for the remainder of the round.
+   *
+   * This caps catastrophic losses to a fixed dollar amount instead of
+   * allowing the full bankroll to bleed out.
+   */
+  maxDrawdownEnabled?: boolean;
+  /** Maximum allowed drawdown in absolute USD. Default: 15.00 */
+  maxDrawdownAbs?: number;
+
+  // ── v3.3.0 Probability-Based Pre-Settlement Liquidation ───────────────────
+  /**
+   * Enable probability-based liquidation.
+   * If the bot holds UP inventory and P(UP) drops below `liquidationProbThreshold`,
+   * it immediately sells all inventory at the best bid and blocks further buys.
+   * Same logic for DOWN inventory when P(DOWN) drops below the threshold.
+   *
+   * This catches losses BEFORE binary resolution wipes the position to $0.
+   * The bot salvages whatever the market will pay (e.g., sell UP at $0.30)
+   * instead of holding to resolution and getting $0.00.
+   */
+  liquidationEnabled?: boolean;
+  /** Probability threshold below which to liquidate. Default: 0.35 */
+  liquidationProbThreshold?: number;
+
+  // ── v3.4.0 Fill Rate Monitor ─────────────────────────────────────────────
+  /**
+   * Enable fill rate imbalance monitor.
+   * Tracks per-side fill timestamps in a rolling window. If one side
+   * accumulates `fillRateMaxImbalance` more fills than the other side
+   * within `fillRateWindowMs`, that side is PAUSED until the other
+   * side catches up (gets at least one fill) or the cooldown expires.
+   *
+   * This prevents burst-fill patterns where one side gets 7 fills in
+   * 50ms while the other gets 0, causing catastrophic side imbalance.
+   */
+  fillRateMonitorEnabled?: boolean;
+  /** Rolling window (ms) over which to count fills per side. Default: 10000 (10s). */
+  fillRateWindowMs?: number;
+  /** Max fill count advantage one side can have over the other. Default: 3. */
+  fillRateMaxImbalance?: number;
+  /** Cooldown (ms) to pause the fast-filling side. Default: 5000 (5s). */
+  fillRatePauseDurationMs?: number;
+
+  // ── v5.0.0 Paper-Faithful Avellaneda + Calibration ────────────────────────
+  /**
+   * When true, subtracts the Polymarket fee (feeRate × price × (1-price))
+   * from the edge calculation in quoteEv(). This fixes a bug where fees
+   * were computed but never used, causing edge to be overestimated.
+   *
+   * Defaults to true because Polymarket fees are real execution drag. Set false
+   * only when reproducing old backtests that intentionally ignored fees.
+   */
+  feeAwareEdge?: boolean;
+
+  /**
+   * Isotonic calibration model. When provided, the raw Black-Scholes
+   * probability is mapped through this model before being used for
+   * edge calculation, inventory skew, and quote placement.
+   *
+   * This implements the paper's recommendation: "Never size on raw
+   * probabilities; size only on calibrated probabilities."
+   *
+   * The model is produced by the offline calibration pipeline:
+   * scripts/run-corpus-calibration-pipeline.ts
+   */
+  calibrationModel?: {
+    buckets: Array<{ lowerScore: number; upperScore: number; calibratedRate: number; count: number; positiveCount: number; empiricalRate: number }>;
+    sampleCount: number;
+    positiveLabelRate: number;
+  };
+}
 
 const DEFAULT_CONFIG: Required<AvellanedaMakerConfig> = {
   skipHygiene: false,
@@ -114,6 +215,7 @@ const DEFAULT_CONFIG: Required<AvellanedaMakerConfig> = {
   highVolExtraMargin: 0.02,
   maxMakerBidPrice: 0.89,
   exposureBlockCooldownMs: 10_000,
+  maxSpendAbs: Infinity,
   // v1.3.0 defaults — all disabled so legacy variants are unaffected
   edgeWeightedSizing: false,
   regimeWeightedSizing: false,
@@ -123,6 +225,26 @@ const DEFAULT_CONFIG: Required<AvellanedaMakerConfig> = {
   unstableBasisThreshold: 5.0,
   // v1.4.0 defaults — disabled so all existing variants are unaffected
   takeProfitEnabled: false,
+  takeProfitThreshold: 0.97,
+  // v3.0.0 Momentum-Confirmed Dynamic Sizing defaults
+  momentumSizingEnabled: false,
+  momentumWindowMs: 5_000,
+  momentumNeutralThreshold: 2.0,
+  momentumMaxPct: 0.25,
+  momentumMinPct: 0.05,
+  // v3.2.0 Max Drawdown Kill Switch defaults
+  maxDrawdownEnabled: false,
+  maxDrawdownAbs: 15.00,
+  // v3.3.0 Probability-Based Liquidation defaults
+  liquidationEnabled: false,
+  liquidationProbThreshold: 0.35,
+  // v3.4.0 Fill Rate Monitor defaults
+  fillRateMonitorEnabled: false,
+  fillRateWindowMs: 10_000,
+  fillRateMaxImbalance: 3,
+  fillRatePauseDurationMs: 5_000,
+  feeAwareEdge: true,
+  calibrationModel: undefined as any,
   };
 
 /**
@@ -161,6 +283,61 @@ export const avellanedaMaker: Strategy = async (ctx) => {
   let inFlightSellUp = false;
   let inFlightSellDown = false;
   
+  // ── v3.0.0 Momentum Velocity Buffer ────────────────────────────────────────
+  // Rolling window of predictive composite prices to compute $/sec velocity
+  const velocityBuffer: { ts: number; price: number }[] = [];
+
+  // ── v3.2.0 Max Drawdown Kill Switch State ──────────────────────────────────
+  const startingBalance = ctx.walletBalanceUsd;
+  let drawdownKilled = false;
+
+  // ── v3.3.0 Probability-Based Liquidation State ───────────────────────────
+  let liquidationFiredUp = false;
+  let liquidationFiredDown = false;
+  let inFlightLiquidationUp = false;
+  let inFlightLiquidationDown = false;
+
+  // ── v3.4.0 Fill Rate Monitor State ───────────────────────────────────
+  const fillTimestampsUp: number[] = [];
+  const fillTimestampsDown: number[] = [];
+  let fillRatePausedUp = 0;   // timestamp until which UP buys are paused
+  let fillRatePausedDown = 0; // timestamp until which DOWN buys are paused
+
+  /** Record a fill and check if the other side needs to be paused */
+  const recordFillAndCheckImbalance = (side: "UP" | "DOWN") => {
+    if (!config.fillRateMonitorEnabled) return;
+    const now = ctx.clock.nowMs();
+    const myTimestamps = side === "UP" ? fillTimestampsUp : fillTimestampsDown;
+    const otherTimestamps = side === "UP" ? fillTimestampsDown : fillTimestampsUp;
+    myTimestamps.push(now);
+
+    // Prune timestamps outside the window
+    const cutoff = now - config.fillRateWindowMs;
+    while (myTimestamps.length > 0 && myTimestamps[0]! < cutoff) myTimestamps.shift();
+    while (otherTimestamps.length > 0 && otherTimestamps[0]! < cutoff) otherTimestamps.shift();
+
+    const myCount = myTimestamps.length;
+    const otherCount = otherTimestamps.length;
+    const imbalance = myCount - otherCount;
+
+    if (imbalance >= config.fillRateMaxImbalance) {
+      // This side is filling too fast — pause it
+      if (side === "UP") {
+        fillRatePausedUp = now + config.fillRatePauseDurationMs;
+        ctx.log(`[avellaneda] v3.4.0 FILL RATE MONITOR: UP paused (${myCount} fills vs ${otherCount} in ${config.fillRateWindowMs}ms window)`, "yellow");
+      } else {
+        fillRatePausedDown = now + config.fillRatePauseDurationMs;
+        ctx.log(`[avellaneda] v3.4.0 FILL RATE MONITOR: DOWN paused (${myCount} fills vs ${otherCount} in ${config.fillRateWindowMs}ms window)`, "yellow");
+      }
+    }
+  };
+
+  /** Check if a side is currently paused by the fill rate monitor */
+  const isFillRatePaused = (side: "UP" | "DOWN"): boolean => {
+    if (!config.fillRateMonitorEnabled) return false;
+    const now = ctx.clock.nowMs();
+    return side === "UP" ? now < fillRatePausedUp : now < fillRatePausedDown;
+  };
 
   const evaluateQuotes = () => {
     if (isDone) return;
@@ -187,7 +364,17 @@ export const avellanedaMaker: Strategy = async (ctx) => {
     }
 
     const fairValue = calculateSettlementAnchoredFairValue(ctx, sigma);
-    const probUp = fairValue.probabilityUp;
+    let probUp = fairValue.probabilityUp;
+
+    // v5.0.0: Apply isotonic calibration if a model is provided.
+    // Maps raw Black-Scholes probability → historically-calibrated probability.
+    // Per the paper: "Never size on raw probabilities; size only on calibrated probabilities."
+    if (probUp !== null && probUp !== undefined && config.calibrationModel) {
+      const calibrated = predictIsotonicProbability(config.calibrationModel as any, probUp);
+      if (calibrated !== null) {
+        probUp = calibrated;
+      }
+    }
     
     if (probUp === null || probUp === undefined || sigma === null || sigma === undefined) {
       ctx.cancelOrders(ctx.pendingOrders.map(o => o.orderId));
@@ -227,23 +414,158 @@ export const avellanedaMaker: Strategy = async (ctx) => {
     
     let inventoryUp = 0;
     let inventoryDown = 0;
+    let totalSpendUp = 0;
+    let totalSpendDown = 0;
     for (const h of ctx.orderHistory) {
       if (h.tokenId === upTokenId) {
-        const delta = h.action === "buy" ? h.shares : -h.shares;
-        inventoryUp += delta;
+        if (h.action === "buy") {
+          inventoryUp += h.shares;
+          totalSpendUp += h.price * h.shares;
+        } else {
+          const vwap = inventoryUp > 0 ? totalSpendUp / inventoryUp : 0;
+          inventoryUp = Math.max(0, inventoryUp - h.shares);
+          totalSpendUp = inventoryUp * vwap;
+        }
       } else if (h.tokenId === downTokenId) {
-        const delta = h.action === "buy" ? h.shares : -h.shares;
-        inventoryDown += delta;
-        inventoryUp -= delta; // UP-equivalent inventory tracking (existing logic)
+        if (h.action === "buy") {
+          inventoryDown += h.shares;
+          totalSpendDown += h.price * h.shares;
+          inventoryUp -= h.shares; // UP-equivalent inventory tracking (existing logic)
+        } else {
+          const vwap = inventoryDown > 0 ? totalSpendDown / inventoryDown : 0;
+          inventoryDown = Math.max(0, inventoryDown - h.shares);
+          totalSpendDown = inventoryDown * vwap;
+          inventoryUp += h.shares;
+        }
+      }
+    }
+    for (const pending of ctx.pendingOrders) {
+      if (pending.action !== "buy") continue;
+      if (pending.tokenId === upTokenId) {
+        totalSpendUp += pending.price * pending.shares;
+      } else if (pending.tokenId === downTokenId) {
+        totalSpendDown += pending.price * pending.shares;
+      }
+    }
+
+    // ── v3.2.0 Max Drawdown Kill Switch ────────────────────────────────────────
+    if (config.maxDrawdownEnabled && !drawdownKilled) {
+      // Mark-to-market: cash + inventory value at current best bids
+      const bidUp = ctx.orderBook.bestBidPrice("UP");
+      const bidDown = ctx.orderBook.bestBidPrice("DOWN");
+      const mtmInventory =
+        (inventoryUp > 0 && bidUp !== null ? inventoryUp * bidUp : 0) +
+        (inventoryDown > 0 && bidDown !== null ? inventoryDown * bidDown : 0);
+      const currentEquity = ctx.walletBalanceUsd + mtmInventory;
+      const drawdown = startingBalance - currentEquity;
+
+      if (drawdown >= config.maxDrawdownAbs) {
+        ctx.log(`[avellaneda] v3.2.0 DRAWDOWN KILL SWITCH: equity=$${currentEquity.toFixed(2)} drawdown=$${drawdown.toFixed(2)} >= limit=$${config.maxDrawdownAbs.toFixed(2)} — STOPPING ALL TRADING`, "yellow");
+        drawdownKilled = true;
+        ctx.cancelOrders(ctx.pendingOrders.map(o => o.orderId));
+        ctx.blockBuys();
+        isDone = true;
+        releaseLock();
+        return;
+      }
+    }
+    if (drawdownKilled) return;
+
+    // ── v3.3.0 Probability-Based Pre-Settlement Liquidation ───────────────────
+    if (config.liquidationEnabled) {
+      const upTokenId = ctx.clobTokenIds[0];
+      const downTokenId = ctx.clobTokenIds[1];
+
+      // Liquidate UP inventory if P(UP) has collapsed
+      if (inventoryUp > 0 && !liquidationFiredUp && !inFlightLiquidationUp && probUp < config.liquidationProbThreshold) {
+        const bestBidUp = ctx.orderBook.bestBidPrice("UP");
+        if (bestBidUp !== null && bestBidUp > 0.01) {
+          ctx.log(`[avellaneda] v3.3.0 LIQUIDATION TRIGGER: P(UP)=${probUp.toFixed(4)} < ${config.liquidationProbThreshold} — dumping ${inventoryUp} UP shares @ bestBid=$${bestBidUp.toFixed(2)}`, "yellow");
+          // Cancel all pending buy orders first
+          const pendingBuys = ctx.pendingOrders.filter(o => o.tokenId === upTokenId && o.action === "buy");
+          if (pendingBuys.length > 0) ctx.cancelOrders(pendingBuys.map(o => o.orderId));
+          // Emergency sell all UP inventory
+          inFlightLiquidationUp = true;
+          ctx.postOrders([{
+            req: {
+              tokenId: upTokenId,
+              action: "sell",
+              price: bestBidUp,
+              shares: inventoryUp,
+              orderType: "FOK",
+            },
+            expireAtMs: ctx.clock.nowMs() + 5000,
+            onFilled: () => {
+              liquidationFiredUp = true;
+              inFlightLiquidationUp = false;
+              ctx.log(`[avellaneda] v3.3.0 LIQUIDATION FILLED: UP inventory sold`, "yellow");
+            },
+            onFailed: () => { inFlightLiquidationUp = false; },
+            onExpired: () => { inFlightLiquidationUp = false; },
+          }]);
+        }
+      }
+
+      // Liquidate DOWN inventory if P(DOWN) has collapsed
+      const probDown = 1 - probUp;
+      if (inventoryDown > 0 && !liquidationFiredDown && !inFlightLiquidationDown && probDown < config.liquidationProbThreshold) {
+        const bestBidDown = ctx.orderBook.bestBidPrice("DOWN");
+        if (bestBidDown !== null && bestBidDown > 0.01) {
+          ctx.log(`[avellaneda] v3.3.0 LIQUIDATION TRIGGER: P(DOWN)=${probDown.toFixed(4)} < ${config.liquidationProbThreshold} — dumping ${inventoryDown} DOWN shares @ bestBid=$${bestBidDown.toFixed(2)}`, "yellow");
+          const pendingBuys = ctx.pendingOrders.filter(o => o.tokenId === downTokenId && o.action === "buy");
+          if (pendingBuys.length > 0) ctx.cancelOrders(pendingBuys.map(o => o.orderId));
+          inFlightLiquidationDown = true;
+          ctx.postOrders([{
+            req: {
+              tokenId: downTokenId,
+              action: "sell",
+              price: bestBidDown,
+              shares: inventoryDown,
+              orderType: "FOK",
+            },
+            expireAtMs: ctx.clock.nowMs() + 5000,
+            onFilled: () => {
+              liquidationFiredDown = true;
+              inFlightLiquidationDown = false;
+              ctx.log(`[avellaneda] v3.3.0 LIQUIDATION FILLED: DOWN inventory sold`, "yellow");
+            },
+            onFailed: () => { inFlightLiquidationDown = false; },
+            onExpired: () => { inFlightLiquidationDown = false; },
+          }]);
+        }
+      }
+
+      // After liquidation fires on a side, block new buys on that side
+      // (no point rebuilding a position we just dumped)
+      if (liquidationFiredUp || liquidationFiredDown) {
+        // Don't return — let normal quoting continue on the non-liquidated side
+        // The buy blocks below will prevent re-accumulation
       }
     }
 
     // 2. Calculate Avellaneda-style reservation probability.
+    //
+    // NOTE: The paper formula r(s,q,t) = s - q·γ·σ²·(T-t) was tested and produces
+    // near-zero skew for 5-minute windows because σ_prob² ≈ 1e-8 at this timescale.
+    // Shootout showed v5.0.0 paper-faithful: -$249 vs v1.5.0 heuristic: -$126.
+    //
+    // We keep the battle-tested heuristic skew with two targeted improvements:
+    // (1) Removed the 0.25 floor — skew now decays to 0 at expiry per the paper's
+    //     insight that terminal skew should vanish (forces inventory liquidation).
+    // (2) Volatility buffer uses probability sigma (σ_price · √T_years) instead of
+    //     raw price sigma, capturing how much P(UP) can actually move.
     const timeFraction = Math.max(0, Math.min(1, remainingSecs / 300));
     const inventoryRatio = inventoryUp / config.maxInventory;
+
+    // Heuristic skew: inventoryRatio × fixed skew factor × time decay
+    // Restored 0.25 floor to match v1.5.0 — removing it was tested and hurt PnL
     const skew = inventoryRatio * config.inventorySkew * Math.max(0.25, timeFraction);
     const adjustedProbUp = Math.max(0.01, Math.min(0.99, probUp - skew));
-    const volatilityBuffer = Math.min(0.05, Math.max(0, sigma) * Math.sqrt(Math.max(remainingSecs, 1) / 31_536_000) * 2);
+
+    // Volatility buffer uses probability sigma for properly-scaled quote widening
+    const yearsRemaining = Math.max(0, remainingSecs) / 31_536_000;
+    const sigmaProbability = Math.max(0, sigma) * Math.sqrt(yearsRemaining);
+    const volatilityBuffer = Math.min(0.05, sigmaProbability * 2);
     const quoteMargin = config.margin + volatilityBuffer + (quoteRegime?.volatilityRegime === "high_vol" ? config.highVolExtraMargin : 0);
 
     // 3. Define Quotes
@@ -276,7 +598,53 @@ export const avellanedaMaker: Strategy = async (ctx) => {
     let targetNotional: number | null = null;  // pct_of_balance mode: USD notional per order
     let targetSharesBase = config.shares;      // fixed mode: share count
     if (config.sharesMode === "pct_of_balance" && balance > 0) {
-      targetNotional = balance * config.sharePct;
+      let effectivePct = config.sharePct;
+
+      // ── v3.0.0 Momentum-Confirmed Dynamic Sizing ──────────────────────────
+      if (config.momentumSizingEnabled && fairValue.predictiveCompositePrice !== null) {
+        const now = ctx.clock.nowMs();
+        velocityBuffer.push({ ts: now, price: fairValue.predictiveCompositePrice });
+
+        // Prune entries older than the window
+        while (velocityBuffer.length > 0 && now - velocityBuffer[0]!.ts > config.momentumWindowMs) {
+          velocityBuffer.shift();
+        }
+
+        if (velocityBuffer.length >= 2) {
+          const oldest = velocityBuffer[0]!;
+          const newest = velocityBuffer[velocityBuffer.length - 1]!;
+          const dtSec = (newest.ts - oldest.ts) / 1000;
+
+          if (dtSec > 0.5) {
+            const velocityPerSec = (newest.price - oldest.price) / dtSec;
+            const absVelocity = Math.abs(velocityPerSec);
+
+            if (absVelocity > config.momentumNeutralThreshold) {
+              const probUp = fairValue.probabilityUp;
+              const momentumConfirms = probUp !== null && (
+                (probUp > 0.5 && velocityPerSec > 0) ||
+                (probUp < 0.5 && velocityPerSec < 0)
+              );
+
+              if (momentumConfirms) {
+                const strength = Math.min(1.0, absVelocity / (config.momentumNeutralThreshold * 5));
+                effectivePct = config.sharePct + (config.momentumMaxPct - config.sharePct) * strength;
+                if (now % 10000 < 1100) {
+                  ctx.log(`[avellaneda] v3.0.0 MOMENTUM CONFIRMS: velocity=$${velocityPerSec.toFixed(2)}/s → sizing UP to ${(effectivePct * 100).toFixed(1)}%`, "green");
+                }
+              } else {
+                const strength = Math.min(1.0, absVelocity / (config.momentumNeutralThreshold * 5));
+                effectivePct = config.sharePct - (config.sharePct - config.momentumMinPct) * strength;
+                if (now % 10000 < 1100) {
+                  ctx.log(`[avellaneda] v3.0.0 MOMENTUM CONTRADICTS: velocity=$${velocityPerSec.toFixed(2)}/s → sizing DOWN to ${(effectivePct * 100).toFixed(1)}%`, "yellow");
+                }
+              }
+            }
+          }
+        }
+      }
+
+      targetNotional = balance * effectivePct;
       // targetSharesBase is unused in pct_of_balance mode; per-side shares computed from notional/price
     }
 
@@ -328,7 +696,7 @@ export const avellanedaMaker: Strategy = async (ctx) => {
 
         // Ensure resting quotes are still safe
     if (existingUp) {
-      const existingEv = quoteEv(adjustedProbUp, existingUp.price, feeRateUp, config.makerRebateEstimate);
+      const existingEv = quoteEv(adjustedProbUp, existingUp.price, feeRateUp, config.makerRebateEstimate, config.feeAwareEdge);
       if (existingEv.edge < config.minEdge) {
         ctx.log(`[fair-value] Canceling stale UP buy quote: ${existingUp.price} (Edge: ${existingEv.edge.toFixed(4)} < ${config.minEdge})`, "dim");
         ctx.cancelOrders([existingUp.orderId]);
@@ -336,7 +704,7 @@ export const avellanedaMaker: Strategy = async (ctx) => {
       }
     }
     if (existingDown) {
-      const existingEv = quoteEv(1 - adjustedProbUp, existingDown.price, feeRateDown, config.makerRebateEstimate);
+      const existingEv = quoteEv(1 - adjustedProbUp, existingDown.price, feeRateDown, config.makerRebateEstimate, config.feeAwareEdge);
       if (existingEv.edge < config.minEdge) {
         ctx.log(`[fair-value] Canceling stale DOWN buy quote: ${existingDown.price} (Edge: ${existingEv.edge.toFixed(4)} < ${config.minEdge})`, "dim");
         ctx.cancelOrders([existingDown.orderId]);
@@ -345,7 +713,7 @@ export const avellanedaMaker: Strategy = async (ctx) => {
     }
     if (existingSellUp) {
       // Selling UP at P is equivalent to buying DOWN at 1-P with probability 1-P_up
-      const existingSellEv = quoteEv(1 - adjustedProbUp, 1 - existingSellUp.price, feeRateUp, config.makerRebateEstimate);
+      const existingSellEv = quoteEv(1 - adjustedProbUp, 1 - existingSellUp.price, feeRateUp, config.makerRebateEstimate, config.feeAwareEdge);
       if (existingSellEv.edge < config.minEdge) {
         ctx.log(`[fair-value] Canceling stale UP sell quote: ${existingSellUp.price} (Edge: ${existingSellEv.edge.toFixed(4)} < ${config.minEdge})`, "dim");
         ctx.cancelOrders([existingSellUp.orderId]);
@@ -354,7 +722,7 @@ export const avellanedaMaker: Strategy = async (ctx) => {
     }
     if (existingSellDown) {
       // Selling DOWN at P is equivalent to buying UP at 1-P with probability P_up
-      const existingSellEv = quoteEv(adjustedProbUp, 1 - existingSellDown.price, feeRateDown, config.makerRebateEstimate);
+      const existingSellEv = quoteEv(adjustedProbUp, 1 - existingSellDown.price, feeRateDown, config.makerRebateEstimate, config.feeAwareEdge);
       if (existingSellEv.edge < config.minEdge) {
         ctx.log(`[fair-value] Canceling stale DOWN sell quote: ${existingSellDown.price} (Edge: ${existingSellEv.edge.toFixed(4)} < ${config.minEdge})`, "dim");
         ctx.cancelOrders([existingSellDown.orderId]);
@@ -367,8 +735,8 @@ export const avellanedaMaker: Strategy = async (ctx) => {
     const TOLERANCE = 0.01;
     const EPSILON = 0.0001;
 
-    const evUp = quoteEv(adjustedProbUp, bidPriceUp, feeRateUp, config.makerRebateEstimate);
-    const evDown = quoteEv(1 - adjustedProbUp, bidPriceDown, feeRateDown, config.makerRebateEstimate);
+    const evUp = quoteEv(adjustedProbUp, bidPriceUp, feeRateUp, config.makerRebateEstimate, config.feeAwareEdge);
+    const evDown = quoteEv(1 - adjustedProbUp, bidPriceDown, feeRateDown, config.makerRebateEstimate, config.feeAwareEdge);
     const flow = ctx.orderFlow?.latest() ?? null;
     const allowUpFlow = flowAllowsSide(flow, "UP", config, ctx);
     const allowDownFlow = flowAllowsSide(flow, "DOWN", config, ctx);
@@ -422,11 +790,27 @@ export const avellanedaMaker: Strategy = async (ctx) => {
     // In pct_of_balance mode: shares = (balance × pct × regimeMultiplier × edgeMultiplier) / price
     // In fixed mode: shares = targetSharesBase × regimeMultiplier × edgeMultiplier
     const computeTargetShares = (side: "UP" | "DOWN", price: number, edgeMultiplier: number): number => {
+      let shares: number;
       if (targetNotional !== null && price > 0) {
-        // True notional sizing: fixed dollar risk per order
-        return Math.max(config.minShares, (targetNotional * edgeMultiplier) / price);
+        shares = Math.max(config.minShares, (targetNotional * edgeMultiplier) / price);
+      } else {
+        shares = Math.max(config.minShares, targetSharesBase * edgeMultiplier);
       }
-      return Math.max(config.minShares, targetSharesBase * edgeMultiplier);
+
+      // Enforce maxSpendAbs per side
+      if (Number.isFinite(config.maxSpendAbs) && price > 0) {
+        const spentSoFar = side === "UP" ? totalSpendUp : totalSpendDown;
+        const availableSpend = Math.max(0, config.maxSpendAbs - spentSoFar);
+        const maxShares = availableSpend / price;
+        if (shares > maxShares) {
+          if (maxShares < config.minShares) {
+            ctx.log(`[avellaneda] maxSpendAbs: ${side} capped — spent $${spentSoFar.toFixed(2)}/$${config.maxSpendAbs.toFixed(2)}`, "yellow");
+            return 0;
+          }
+          shares = maxShares;
+        }
+      }
+      return shares;
     };
 
     // Helper: compound falling-knife adverse signal check (all live-available signals, no replay leakage)
@@ -468,7 +852,13 @@ export const avellanedaMaker: Strategy = async (ctx) => {
     };
 
     // v1.4.0: suppress new buys on a side once take-profit has fired — we are exiting, not accumulating
-    if (bidPriceUp !== null && bidPriceUp > 0.01 && bidPriceUp < 0.99 && evUp.edge >= config.minEdge && allowUpFlow) {
+    // v3.3.0: also suppress buys after liquidation fires — no point rebuilding a dumped position
+    if (liquidationFiredUp) {
+      if (existingUp) ctx.cancelOrders([existingUp.orderId]);
+    } else if (isFillRatePaused("UP")) {
+      // v3.4.0: Fill rate monitor paused this side
+      if (existingUp) ctx.cancelOrders([existingUp.orderId]);
+    } else if (bidPriceUp !== null && bidPriceUp > 0.01 && bidPriceUp < 0.99 && evUp.edge >= config.minEdge && allowUpFlow) {
       // v1.3.0 — Falling-Knife Block: suppress new UP buys if we've detected consecutive adverse fills
       if (config.fallingKnifeBlock && sideBlockedUp) {
         if (ctx.clock.nowMs() % 10000 === 0) {
@@ -497,19 +887,25 @@ export const avellanedaMaker: Strategy = async (ctx) => {
                 orderType: "GTC" as const,
               },
               expireAtMs: ctx.clock.nowMs() + 10000,
-              onFilled: config.fallingKnifeBlock ? (_filledShares) => {
+              onFilled: (_filledShares) => {
+                // v3.5.0: Track per-side spend
+                totalSpendUp += capturedFillPriceUp * _filledShares;
+                // v3.4.0: Record fill for rate monitoring
+                recordFillAndCheckImbalance("UP");
                 // Compound falling-knife detection — only live-available signals, no replay leakage
-                const isAdverse = checkFallingKnifeAdverse("UP", capturedFillPriceUp);
-                if (isAdverse) {
-                  consecutiveAdverseUp += 1;
-                  if (consecutiveAdverseUp >= config.fallingKnifeWindow) {
-                    sideBlockedUp = true;
-                    ctx.log(`[fair-value] v1.3.0 falling-knife TRIGGERED: UP blocked after ${consecutiveAdverseUp} adverse fills @ ${capturedFillPriceUp.toFixed(3)}`, "yellow");
+                if (config.fallingKnifeBlock) {
+                  const isAdverse = checkFallingKnifeAdverse("UP", capturedFillPriceUp);
+                  if (isAdverse) {
+                    consecutiveAdverseUp += 1;
+                    if (consecutiveAdverseUp >= config.fallingKnifeWindow) {
+                      sideBlockedUp = true;
+                      ctx.log(`[fair-value] v1.3.0 falling-knife TRIGGERED: UP blocked after ${consecutiveAdverseUp} adverse fills @ ${capturedFillPriceUp.toFixed(3)}`, "yellow");
+                    }
+                  } else {
+                    consecutiveAdverseUp = 0;
                   }
-                } else {
-                  consecutiveAdverseUp = 0; // Reset on non-adverse fill
                 }
-              } : undefined,
+              },
               onFailed: (reason) => {
                 inFlightUp = false;
                 recordExposureBlock(ctx, exposureBlockCooldowns, exposureKey, reason, config.exposureBlockCooldownMs);
@@ -522,7 +918,12 @@ export const avellanedaMaker: Strategy = async (ctx) => {
       ctx.cancelOrders([existingUp.orderId]);
     }
 
-    if (bidPriceDown !== null && bidPriceDown > 0.01 && bidPriceDown < 0.99 && evDown.edge >= config.minEdge && allowDownFlow) {
+    if (liquidationFiredDown) {
+      if (existingDown) ctx.cancelOrders([existingDown.orderId]);
+    } else if (isFillRatePaused("DOWN")) {
+      // v3.4.0: Fill rate monitor paused this side
+      if (existingDown) ctx.cancelOrders([existingDown.orderId]);
+    } else if (bidPriceDown !== null && bidPriceDown > 0.01 && bidPriceDown < 0.99 && evDown.edge >= config.minEdge && allowDownFlow) {
       // v1.3.0 — Falling-Knife Block: suppress new DOWN buys if we've detected consecutive adverse fills
       if (config.fallingKnifeBlock && sideBlockedDown) {
         if (ctx.clock.nowMs() % 10000 === 0) {
@@ -551,19 +952,25 @@ export const avellanedaMaker: Strategy = async (ctx) => {
                 orderType: "GTC" as const,
               },
               expireAtMs: ctx.clock.nowMs() + 10000,
-              onFilled: config.fallingKnifeBlock ? (_filledShares) => {
-                // Compound falling-knife detection — only live-available signals, no replay leakage
-                const isAdverse = checkFallingKnifeAdverse("DOWN", capturedFillPriceDown);
-                if (isAdverse) {
-                  consecutiveAdverseDown += 1;
-                  if (consecutiveAdverseDown >= config.fallingKnifeWindow) {
-                    sideBlockedDown = true;
-                    ctx.log(`[fair-value] v1.3.0 falling-knife TRIGGERED: DOWN blocked after ${consecutiveAdverseDown} adverse fills @ ${capturedFillPriceDown.toFixed(3)}`, "yellow");
+              onFilled: (_filledShares) => {
+                // v3.5.0: Track per-side spend
+                totalSpendDown += capturedFillPriceDown * _filledShares;
+                // v3.4.0: Record fill for rate monitoring
+                recordFillAndCheckImbalance("DOWN");
+                // Compound falling-knife detection
+                if (config.fallingKnifeBlock) {
+                  const isAdverse = checkFallingKnifeAdverse("DOWN", capturedFillPriceDown);
+                  if (isAdverse) {
+                    consecutiveAdverseDown += 1;
+                    if (consecutiveAdverseDown >= config.fallingKnifeWindow) {
+                      sideBlockedDown = true;
+                      ctx.log(`[fair-value] v1.3.0 falling-knife TRIGGERED: DOWN blocked after ${consecutiveAdverseDown} adverse fills @ ${capturedFillPriceDown.toFixed(3)}`, "yellow");
+                    }
+                  } else {
+                    consecutiveAdverseDown = 0;
                   }
-                } else {
-                  consecutiveAdverseDown = 0;
                 }
-              } : undefined,
+              },
               onFailed: (reason) => {
                 inFlightDown = false;
                 recordExposureBlock(ctx, exposureBlockCooldowns, exposureKey, reason, config.exposureBlockCooldownMs);
@@ -579,7 +986,7 @@ export const avellanedaMaker: Strategy = async (ctx) => {
         // ── v1.5.0 Avellaneda Continuous Ask Quoting ────────────────────────────────
     
     // Sell UP Inventory
-    const evSellUp = askPriceUp !== null ? quoteEv(1 - adjustedProbUp, 1 - askPriceUp, feeRateUp, config.makerRebateEstimate) : { edge: -1 };
+    const evSellUp = askPriceUp !== null ? quoteEv(1 - adjustedProbUp, 1 - askPriceUp, feeRateUp, config.makerRebateEstimate, config.feeAwareEdge) : { edge: -1 };
     if (inventoryUp > 0 && askPriceUp !== null && askPriceUp >= 0.01 && askPriceUp <= 0.99 && evSellUp.edge >= config.minEdge) {
       if (!existingSellUp || Math.abs(existingSellUp.price - askPriceUp) > (0.005)) {
         if (existingSellUp) {
@@ -608,7 +1015,7 @@ export const avellanedaMaker: Strategy = async (ctx) => {
     }
 
     // Sell DOWN Inventory
-    const evSellDown = askPriceDown !== null ? quoteEv(adjustedProbUp, 1 - askPriceDown, feeRateDown, config.makerRebateEstimate) : { edge: -1 };
+    const evSellDown = askPriceDown !== null ? quoteEv(adjustedProbUp, 1 - askPriceDown, feeRateDown, config.makerRebateEstimate, config.feeAwareEdge) : { edge: -1 };
     if (inventoryDown > 0 && askPriceDown !== null && askPriceDown >= 0.01 && askPriceDown <= 0.99 && evSellDown.edge >= config.minEdge) {
       if (!existingSellDown || Math.abs(existingSellDown.price - askPriceDown) > (0.005)) {
         if (existingSellDown) {
@@ -752,14 +1159,18 @@ function feeRate(ctx: StrategyContext, tokenId: string): number {
   return raw > 1 ? raw / 10_000 : raw;
 }
 
-function quoteEv(probability: number, price: number | null, feeRate: number, makerRebateEstimate: number) {
+function quoteEv(probability: number, price: number | null, feeRate: number, makerRebateEstimate: number, feeAwareEdge: boolean = false) {
   if (price === null) {
     return { edge: Number.NEGATIVE_INFINITY, feeReference: 0 };
   }
   const takerFee = 0;
   const feeReference = feeRate * price * (1 - price);
+  // v5.0.0: When feeAwareEdge is true, subtract the actual Polymarket fee from edge.
+  // Previously this was computed but NEVER USED — a bug per the research paper which
+  // states: "edge = estimated probability minus market price minus execution cost."
+  const feeDeduction = feeAwareEdge ? feeReference : 0;
   return {
-    edge: probability - price - takerFee + makerRebateEstimate,
+    edge: probability - price - takerFee - feeDeduction + makerRebateEstimate,
     feeReference,
   };
 }

@@ -1,3 +1,4 @@
+/** [IMPORTED LEGACY VARIANT]: live snapshot **/
 import type { StrategyContext } from "./types";
 
 export type PriceSignal = {
@@ -49,3 +50,4 @@ export function waitForBid(
   }, pollMs);
   return { cancel: () => ctx.clock.clearInterval(interval) };
 }
+

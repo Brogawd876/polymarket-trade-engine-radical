@@ -131,7 +131,7 @@ export class FixtureRunner {
   private eventIdx = 0;
 
   /** Interval (fake ms) at which lifecycle.tick() is automatically fired. */
-  static readonly TICK_MS = 100;
+  static readonly TICK_MS = 10;
 
   constructor(
     walletBalance = Infinity,
@@ -168,6 +168,25 @@ export class FixtureRunner {
     this.simUserChannel = new SimUserChannel({
       getBook,
       cancelCallbacks: this.client.cancelCallbacks,
+      clock: {
+        nowMs: () => this.clock ? this.clock.now : LOG_START_TS,
+        setTimeout: (h: any, d: any) => {
+            if (this.clock) return this.clock.setTimeout(h, d);
+            return setTimeout(h, d);
+        },
+        clearTimeout: (h: any) => {
+            if (this.clock) return this.clock.clearTimeout(h);
+            return clearTimeout(h);
+        },
+        setInterval: (h: any, i: any) => {
+            if (this.clock) return this.clock.setInterval(h, i);
+            return setInterval(h, i);
+        },
+        clearInterval: (h: any) => {
+            if (this.clock) return this.clock.clearInterval(h);
+            return clearInterval(h);
+        },
+      } as any,
     });
   }
 
@@ -178,6 +197,7 @@ export class FixtureRunner {
   async setup(strategy: Strategy): Promise<void> {
     // Suppress delays so lifecycle ticks and fills are fast
     process.env.SIM_DELAY_MS = "0";
+    process.env.SIM_MATCH_DELAY_MS = "0";
     process.env.SIM_BALANCE_DELAY_MS = "0";
 
     this.clock = sinon.useFakeTimers({

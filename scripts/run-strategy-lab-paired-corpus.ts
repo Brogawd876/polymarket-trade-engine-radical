@@ -43,12 +43,21 @@ function combineVariantSummaries(summaries: StrategyLabVariantSummary[]): Strate
     const losses = group.reduce((acc, s) => acc + s.losses, 0);
     const runs = group.reduce((acc, s) => acc + s.runs, 0);
     const totalPnl = group.reduce((acc, s) => acc + s.totalPnl, 0);
+    const conservativeAdjustedTotalPnl = group.reduce((acc, s) => acc + s.conservativeAdjustedTotalPnl, 0);
     const tradeCount = group.reduce((acc, s) => acc + s.tradeCount, 0);
     const eligibleFillCount = group.reduce((acc, s) => acc + s.conservativeFill.eligibleFillCount, 0);
     const evaluatedFillCount = group.reduce((acc, s) => acc + s.conservativeFill.evaluatedFillCount, 0);
     const usableEvidenceCount = group.reduce((acc, s) => acc + s.conservativeFill.usableEvidenceCount, 0);
+    const confirmedFillCount = group.reduce((acc, s) => acc + s.conservativeFill.confirmedFillCount, 0);
+    const rejectedFillCount = group.reduce((acc, s) => acc + s.conservativeFill.rejectedFillCount, 0);
     const bestPnls = group.flatMap((s) => typeof s.bestPnl === "number" ? [s.bestPnl] : []);
     const worstPnls = group.flatMap((s) => typeof s.worstPnl === "number" ? [s.worstPnl] : []);
+    const conservativeAdjustedBestPnls = group.flatMap((s) =>
+      typeof s.conservativeAdjustedBestPnl === "number" ? [s.conservativeAdjustedBestPnl] : [],
+    );
+    const conservativeAdjustedWorstPnls = group.flatMap((s) =>
+      typeof s.conservativeAdjustedWorstPnl === "number" ? [s.conservativeAdjustedWorstPnl] : [],
+    );
 
     return {
       ...first,
@@ -67,6 +76,10 @@ function combineVariantSummaries(summaries: StrategyLabVariantSummary[]): Strate
       avgPnl: completed > 0 ? totalPnl / completed : null,
       bestPnl: bestPnls.length > 0 ? Math.max(...bestPnls) : null,
       worstPnl: worstPnls.length > 0 ? Math.min(...worstPnls) : null,
+      conservativeAdjustedTotalPnl,
+      conservativeAdjustedAvgPnl: completed > 0 ? conservativeAdjustedTotalPnl / completed : null,
+      conservativeAdjustedBestPnl: conservativeAdjustedBestPnls.length > 0 ? Math.max(...conservativeAdjustedBestPnls) : null,
+      conservativeAdjustedWorstPnl: conservativeAdjustedWorstPnls.length > 0 ? Math.min(...conservativeAdjustedWorstPnls) : null,
       blocked: group.reduce((acc, s) => acc + s.blocked, 0),
       problems: group.reduce((acc, s) => acc + s.problems, 0),
       brierScore: avgNullable(group.map((s) => s.brierScore)),
@@ -85,6 +98,8 @@ function combineVariantSummaries(summaries: StrategyLabVariantSummary[]): Strate
         touchOnlyCount: group.reduce((acc, s) => acc + s.conservativeFill.touchOnlyCount, 0),
         probableFillCount: group.reduce((acc, s) => acc + s.conservativeFill.probableFillCount, 0),
         tradeThroughFillCount: group.reduce((acc, s) => acc + s.conservativeFill.tradeThroughFillCount, 0),
+        confirmedFillCount,
+        rejectedFillCount,
         unknownInsufficientDataCount: group.reduce((acc, s) => acc + s.conservativeFill.unknownInsufficientDataCount, 0),
         usableEvidenceRate: evaluatedFillCount > 0 ? usableEvidenceCount / evaluatedFillCount : null,
         usableEvidenceCount,

@@ -1,51 +1,58 @@
 # Active Task
 
-**Status:** Engine `master` updated with Phase 9D strategy calibration. 
+**Status:** Promising-strategy calibration pipeline run completed; readiness blocked.
 
-**Current Objective:** Phase 9E: Dynamic Position Sizing and Confidence Scaling.
+**Current Objective:** Replay-stall classification is fixed; increase high-quality paired evidence before any calibration artifact or strategy promotion.
 
-## Current Status
+## Current State
 
-The engine is now a hardened research platform with the following status:
-- **Strategy Calibration (Phase 9D) COMPLETED**: Implemented strategy-side exposure-aware sizing clamps. Reduced blocked intent noise by >90%.
-- **Blocked-Decision Counterfactual Audit**: COMPLETED. Confirmed risk gates are vital defenses.
-- **Normal Mode Performance**: `fvm-v1.1.0` is profitable in Normal mode ($41.44 PnL across 50 pairs).
-- **Adverse Selection**: Remains high (~0.9), confirming the maker strategy's nature in this regime.
+- The repo has moved beyond Phase 9E. Dynamic percentage sizing and momentum-confirmed sizing exist in strategy code.
+- The current documented champion in top-level `HANDOFF.md` is `fvm-v3.1.0-avellaneda-momentum`, based on a 10-file simulation result.
+- Experimental strategy variants now extend through v5.0.0, including fee-aware Avellaneda calibration.
+- A new explicit calibrated variant exists: `fvm-v5.1.0-avellaneda-isotonic`.
+- The corpus calibration pipeline now defaults to lean streaming replay extraction instead of full-batch retention.
+- Strategy Lab now supports lightweight progress polling and cached indexed raw L2 scoring.
+- Calibration artifacts are generated only after readiness passes and are loaded fail-closed by calibrated variants.
+- The promising-strategy run at `data/calibration-output/promising-2026-05-31` produced 894 combined records and no paper-candidate artifact.
+- The least-bad strategy in that run was `fvm-v3.5.1-avellaneda-strict-gate`, but it still lost money and remains research-only.
+- Lean calibration now records failed slugs/errors and skips known failed slugs on resume unless `--retry-failed` is used.
+- Strategy Lab and lean calibration now fail fast on replay logs that end before market open without market-price or resolution data, avoiding generic replay stalls for incomplete premarket logs.
+- The 10ms `ReplayRunner` heartbeat is active and is part of the radical fork intent.
+- Type 3 live order semantics are proven and must not be regressed.
 
-## Completed Steps
+## Immediate Work Items
 
-- [x] Phase 4: Live feed initialization and timing correctness.
-- [x] Phase 5: Multi-round paper/shadow capture.
-- [x] Phase 5B: Multi-round replay-artifact capture.
-- [x] Phase 6: Historical replay validation.
-- [x] Phase 7: Replay-Based Strategy Readiness Audit.
-- [x] Phase 8A: Profit-Critical Data Foundation.
-- [x] Phase 8B: Strategy Lab Markout Integration.
-- [x] Phase 8C: Raw Polymarket L2 Recorder (Hardened).
-- [x] Phase 8D: Conservative Fill-Model Scoring.
-- [x] Phase 8E/8F: Empirical Calibration Gate and 25-pair corpus expansion.
-- [x] Phase 9A: Blocked-decision counterfactual audit.
-- [x] Phase 9B: Establish "Repository Truth" and run audit.
-- [x] Phase 9C: Verify audit validity and decide next move (Decision: Do not loosen gates).
-- [x] Phase 9D: Strategy calibration and noise reduction (Implemented strategy-side clamps).
+- [x] Evaluate whole project state, handoff docs, session log, and agent instructions.
+- [x] Restore green `npm run check`.
+- [x] Restore backend root `bun test` by excluding UI tests from root discovery.
+- [x] Keep UI tests runnable from `ui/` with UI dependencies installed.
+- [x] Update stale strategy tests for the current max-spend-cap behavior.
+- [x] Reduce replay-runner console noise during tests while preserving explicit debug capability.
+- [x] Update handoff/session logs after verification.
+- [x] Implement efficient calibration-to-strategy pipeline plan.
+- [x] Add low-memory Strategy Lab progress API.
+- [x] Add cached token/time indexed raw L2 fill-scoring path with parity coverage.
+- [x] Add calibration artifact generation and fail-closed artifact loading.
+- [x] Add explicit calibrated Avellaneda variant and verification command.
+- [x] Fix calibration log/memory bottleneck with quiet replay logging.
+- [x] Add failed-slug resume checkpoints and `--allow-partial` calibration mode.
+- [x] Run promising strategies through the lean calibration/audit/readiness pipeline.
+- [x] Classify incomplete premarket replay logs before Strategy Lab/lean calibration execution.
+- [x] Remove leftover lifecycle test debug output and gate replay adapter debug logs behind `REPLAY_DEBUG=true`.
 
 ## Next Exact Task
 
-1. **Tune Confidence Scaling:** Implement logic in `fairValueMaker` to scale `sharePct` based on predictive confidence (sigma) and edge.
-2. **Finalize Institutional Variant:** Standardize the variant with maker-safe hygiene and dynamic sizing as the production-ready champion.
-3. **Multi-Asset Replay:** Expand validation to other assets (ETH, SOL) if fixtures are available.
+Latest verified checks:
 
----
+```powershell
+& 'C:\Program Files\nodejs\npm.cmd' run check
+bun test test\engine\strategy-lab.test.ts test\engine\replay.test.ts test\engine\market-lifecycle.test.ts
+bun test
+cd ui; bun test
+```
 
-### A/B Test Findings & Sweep Results (2026-05-27)
-Post-Calibration results across 50 corpus fixtures (Phase 9D):
+Next:
 
-| Strategy / Variant | PnL | Trades | ASR | Blocked Intents | Status |
-|--------------------|-----|--------|-----|-----------------|--------|
-| `fvm-v1.1.0` (Clamped) | **+$41.44** | 21 | 91.2% | 82 | **Champion / Hardened** |
-| `fvm-v1.1.0` (Baseline) | **-$2.20** | 7 | 72.2% | 1383 | Deprecated (Noisy) |
-
-**Verdict**: 
-1. **Strategy-side clamping is effective**: 94% reduction in blocked intent noise.
-2. **Profitability restored in Normal mode**: Clamping allows the strategy to capture more usable fills by scaling down rather than hitting hard rejections.
-3. **Risk Gates are Unchanged**: Security posture remains strict.
+1. Optionally re-run lean calibration with `--retry-failed --allow-partial` to reclassify old failed-slug progress entries with explicit unresolved replay reasons.
+2. Capture more temporally separated, trade-print-backed paired raw L2 data; current readiness is blocked at 894 / 5000 total records and 870 / 2000 trade-print-backed records.
+3. Keep `fvm-v3.5.1-avellaneda-strict-gate` as the next research baseline, not as a paper/live candidate.
