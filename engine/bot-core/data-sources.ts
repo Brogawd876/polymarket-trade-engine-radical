@@ -1,3 +1,5 @@
+import type { TruthSource } from "../types/market-truth.ts";
+
 export interface Clock {
   nowMs(): number;
   setTimeout(handler: () => void, delayMs: number): unknown;
@@ -23,6 +25,8 @@ export class RealClock implements Clock {
     clearInterval(handle as any);
   }
 }
+
+export type LogColor = "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" | "white" | "gray" | "black" | "dim";
 
 export type BotAsset = "btc" | "eth" | "xrp" | "sol" | "doge";
 
@@ -277,6 +281,7 @@ export type OrderFlowSnapshot = {
   timestampMs: number;
   source: OrderFlowSource;
   confidence: "low" | "medium" | "high";
+  truthSource: import("../types/market-truth").TruthSource;
   /** Order Book Imbalance: (BidVol - AskVol) / (BidVol + AskVol) */
   imbalanceUp: number | null;
   imbalanceDown: number | null;
@@ -290,6 +295,7 @@ export type OrderFlowSnapshot = {
 };
 
 export interface OrderFlowMonitor {
+  truthSource: TruthSource;
   latest(): OrderFlowSnapshot;
   subscribe(handler: (snapshot: OrderFlowSnapshot) => void): () => void;
 }

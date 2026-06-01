@@ -6,6 +6,7 @@ import {
   type OrderFlowMonitor,
   type WhaleActivity
 } from "../engine/bot-core/data-sources.ts";
+import type { TruthSource } from "../engine/types/market-truth.ts";
 
 export type TradeEvent = {
   assetId: string;
@@ -28,6 +29,11 @@ export type TradeTapeOptions = {
  * such as CVD (Cumulative Volume Delta) and OBI (Order Book Imbalance).
  */
 export class TradeTapeTracker implements OrderFlowMonitor {
+  public readonly truthSource: TruthSource = {
+    sourceClass: "inferred_diagnostic",
+    confidence: "low",
+  };
+
   private asset: BotAsset;
   private clock: Clock;
   private whaleThresholdUsd: number;
@@ -74,6 +80,10 @@ export class TradeTapeTracker implements OrderFlowMonitor {
       timestampMs: now,
       source: "public_inferred",
       confidence: "low",
+      truthSource: {
+        sourceClass: "inferred_diagnostic",
+        confidence: "low"
+      },
       imbalanceUp: this.imbalanceUp,
       imbalanceDown: this.imbalanceDown,
       cvd10s: cvd10,

@@ -117,7 +117,7 @@ export class SessionManager {
     }
   }
 
-  async startReplay(file: string, config: { strategy?: string } = {}): Promise<void> {
+  async startReplay(file: string, config: { strategy?: string; allowInferredFlow?: boolean } = {}): Promise<void> {
     if (this._sessionState === "running" || this._sessionState === "starting") {
       throw new Error("Session is already active");
     }
@@ -140,7 +140,8 @@ export class SessionManager {
         {
           clock,
           persistState: false,
-          telemetry: this.telemetryBus
+          telemetry: this.telemetryBus,
+          strategyConfigOverride: { allowInferredFlow: config.allowInferredFlow ?? false }
         }
       );
       

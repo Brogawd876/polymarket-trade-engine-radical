@@ -667,7 +667,9 @@ export class MarketLifecycle {
         aggregate: this._aggregator,
         leadLag: this._leadLag,
       },
-      orderFlow: this._orderFlow,
+        orderFlow: (this._strategyConfig.allowInferredFlow || this._orderFlow?.truthSource?.sourceClass !== "inferred_diagnostic")
+          ? this._orderFlow 
+          : undefined,
       quant: this._quant,
       clock: this._clock,
     };
