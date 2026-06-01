@@ -4,10 +4,10 @@
   "type": "module",
   "scripts": {
     "check": "tsc -b --noEmit",
-    "test": "bun test",
-    "test:backend": "bun test",
+    "test": "bun test --max-concurrency=1",
+    "test:backend": "bun test --max-concurrency=1",
     "test:ui": "cd ui && bun test",
-    "verify": "bun run check && bun test && cd ui && bun run lint && bunx vitest run && bun run build",
+    "verify": "bun run check && bun test --max-concurrency=1 && cd ui && bun run lint && bunx vitest run && bun run build",
     "calibrate": "bun scripts/run-corpus-calibration-pipeline.ts",
     "calibrate:verify": "bun scripts/run-calibration-verification-pipeline.ts",
     "wallet": "bun run scripts/wallet.ts"

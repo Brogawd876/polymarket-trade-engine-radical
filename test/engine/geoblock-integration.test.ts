@@ -35,7 +35,7 @@ describe("Engine-Level Geoblock Shutdown", () => {
     
     (bot as any)._userChannelFactory = () => ({});
     (bot as any)._tracker = {};
-    (bot as any)._ticker = { schedule: () => {}, waitForReady: async () => {} };
+    (bot as any)._ticker = { schedule: () => {}, waitForReady: async () => {}, destroy: () => {} };
     (bot as any)._resolution = { start: async () => {}, isReady: () => true, subscribe: () => {}, stop: () => {} };
     (bot as any)._binance = { start: async () => {}, stop: () => {} };
     (bot as any)._coinbase = { start: async () => {}, stop: () => {} };
@@ -62,13 +62,13 @@ describe("Engine-Level Geoblock Shutdown", () => {
         destroy: () => {}
     };
     
-    (bot as any)._spawner.getActiveLifecycles().set("test-slug", mockLifecycle);
+    (bot as any)._spawner.injectRecoveredLifecycle("test-slug", mockLifecycle);
     const shutdownSpy = spyOn(bot as any, "_startShutdown");
 
     try {
         await (bot as any).tickOnce();
     } catch (e: any) {
-        expect(e).toBeInstanceOf(TerminalAccessError);
+        // Now it doesn't throw by design, so this catch is just a safeguard
     }
 
     expect(shutdownSpy).toHaveBeenCalledWith("Terminal Access Error");

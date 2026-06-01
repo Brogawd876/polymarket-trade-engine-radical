@@ -68,14 +68,18 @@ export class MarketSpawner {
   }
 
   public getActiveLifecycles(): Map<string, MarketLifecycle> {
-    return this._lifecycles;
+    return new Map(this._lifecycles);
   }
 
   public applyReplayMarketResult(result: ReplayMarketResult): void {
-    const lifecycle = this._lifecycles.get(result.slug);
-    if (lifecycle) {
-      lifecycle.applyReplayMarketResult(result);
-    }
+    if (!this._opts.botContext.replayReader) return;
+    this._opts.apiQueue.marketResult.set(result.startTime, {
+      startTime: result.startTime,
+      endTime: result.endTime,
+      completed: result.completed,
+      openPrice: result.openPrice,
+      closePrice: result.closePrice,
+    });
   }
 
   public get activeLifecycleCount(): number {
@@ -110,7 +114,14 @@ export class MarketSpawner {
       await new Promise((r) => setTimeout(r, 500));
       attempts++;
     }
-    if (this._tickInterval) this._opts.clock.clearInterval(this._tickInterval);
+    if (this._lifecycles.size > 0) {
+      log.write(`[shutdown] ${this._lifecycles.size} lifecycle(s) failed to stop cleanly. Force clearing.`, "red");
+      this._lifecycles.clear();
+    }
+    if (this._tickInterval) {
+      this._opts.clock.clearInterval(this._tickInterval);
+      this._tickInterval = null;
+    }
   }
 
   public async tickOnce(): Promise<void> {
@@ -202,9 +213,10 @@ export class MarketSpawner {
         if (e instanceof TerminalAccessError) {
           console.error(`\n[fatal] [${slug}] ${e.message}\n`);
           this._opts.onTerminalError(slug, e);
-          throw e; // Rethrow to stop ticks
+          lifecycle.shutdown();
+        } else {
+          log.write(`[${slug}] tick error: ${e}`, "red");
         }
-        log.write(`[${slug}] tick error: ${e}`, "red");
       }
       if (lifecycle.state === "DONE") done.push(slug);
     }
