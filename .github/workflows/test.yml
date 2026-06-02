@@ -50,7 +50,8 @@ jobs:
         run: bun test --max-concurrency=1 $(git ls-files 'test/scripts/*.test.ts')
 
       - name: Run UI tests
-        run: bun test --max-concurrency=1 $(git ls-files 'ui/src/pages/__tests__/*.tsx' 'ui/src/store/__tests__/*.ts' 'ui/src/components/LiveMonitor/__tests__/*.tsx')
+        working-directory: ui
+        run: bun test --max-concurrency=1 $(git ls-files 'src/pages/__tests__/*.tsx' 'src/store/__tests__/*.ts' 'src/components/LiveMonitor/__tests__/*.tsx')
 
       - name: Run UI lint
         working-directory: ui
