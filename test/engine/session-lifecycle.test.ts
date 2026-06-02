@@ -1,11 +1,8 @@
-import { describe, expect, test, afterAll, beforeAll } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { join } from "path";
 import { 
-    TelemetryBus, 
-    VirtualClock,
-    RealClock
+    TelemetryBus
 } from "../../engine/bot-core/index.ts";
-import { EarlyBird } from "../../engine/early-bird.ts";
 import { SessionManager } from "../../engine/session-manager.ts";
 
 describe("Session Lifecycle Integration", () => {
@@ -13,12 +10,13 @@ describe("Session Lifecycle Integration", () => {
   test("Start -> Monitor -> Stop (Clean Flow)", async () => {
     const bus = new TelemetryBus();
     const sessionManager = new SessionManager(bus);
+    const fixture = join(import.meta.dir, "..", "fixtures", "replay", "filled-order.log");
 
     // 1. Initially IDLE
     expect(sessionManager.getStatus().sessionState).toBe("idle");
 
-    // 2. Start Simulation
-    await sessionManager.startSimulation({ strategy: "simulation", rounds: 1 });
+    // 2. Start deterministic replay session
+    await sessionManager.startReplay(fixture, { strategy: "simulation" });
     
     // Wait for it to transition to running and have a lifecycle
     let attempts = 0;
@@ -59,14 +57,12 @@ describe("Session Lifecycle Integration", () => {
     expect(sessionManager.getStatus().sessionState).toBe("idle");
   });
 
-  test("Resolution Timeout Hardening", async () => {
-    // This test verifies that even if resolution price is missing, 
-    // the session still completes thanks to the timeout in _waitForResolution.
-    
+  test("Stop returns promptly for replay sessions with active lifecycle", async () => {
     const bus = new TelemetryBus();
     const sessionManager = new SessionManager(bus);
+    const fixture = join(import.meta.dir, "..", "fixtures", "replay", "filled-order.log");
 
-    await sessionManager.startSimulation({ strategy: "simulation", rounds: 1 });
+    await sessionManager.startReplay(fixture, { strategy: "simulation" });
     
     // Wait for running
     let attempts = 0;
@@ -75,24 +71,12 @@ describe("Session Lifecycle Integration", () => {
         attempts++;
     }
 
-    // Force a position in the lifecycle to trigger _waitForResolution during shutdown
-    const bot = (sessionManager as any)._bot as EarlyBird;
-    const lifecycles = (bot as any)._spawner.getActiveLifecycles() as Map<string, any>;
-    const lifecycle = lifecycles.values().next().value;
-    if (lifecycle) {
-        (lifecycle as any)._tracker._shares = 1; // Direct inject
-    }
-
     // Trigger stop
     const startStopTs = Date.now();
     await sessionManager.stopSession();
-    
-    // We expect this to return after the bot.stop() finishes.
-    // bot.stop() waits for lifecycles to settle.
-    // MarketLifecycle._waitForResolution has a 15s timeout.
-    
+
     const duration = Date.now() - startStopTs;
-    // It should complete eventually (not hang forever)
+    expect(duration).toBeLessThan(5_000);
     expect(sessionManager.getStatus().sessionState).toBe("completed");
     
     // Move to idle
