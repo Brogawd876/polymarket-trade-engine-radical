@@ -11,6 +11,8 @@ describe("Production Auth Hardening", () => {
     process.env.BUILDER_PASSPHRASE = "builder-passphrase";
     process.env.POLY_SIGNATURE_TYPE = "1";
     process.env.POLY_FUNDER_ADDRESS = "0x1234567890123456789012345678901234567890";
+    process.env.POLY_API_KEY_NONCE = "1";
+    process.env.POLYGON_RPC_URL = "https://polygon-bor-rpc.publicnode.com";
     process.env.MARKET_ASSET = "btc";
   });
 
