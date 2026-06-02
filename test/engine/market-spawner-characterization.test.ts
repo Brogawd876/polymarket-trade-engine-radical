@@ -69,19 +69,19 @@ describe("MarketSpawner Characterization (Pre-Extraction)", () => {
     // 3. No Live Orders Placeable Guarantee
     test("production preflight behavior strictly asserts prod flag before spawning live client", async () => {
         const bus = new TelemetryBus();
-        
-        const bot = new EarlyBird(
-            "fair-value-maker",
-            1,
-            true, // prod
-            1,
-            false,
-            undefined, // no replay
-            { telemetry: bus, marketLogMode: "disabled", presetId: "test" }
-        );
+        let bot: EarlyBird | undefined;
 
         let crashed = false;
         try {
+            bot = new EarlyBird(
+                "fair-value-maker",
+                1,
+                true, // prod
+                1,
+                false,
+                undefined, // no replay
+                { telemetry: bus, marketLogMode: "disabled", presetId: "test" }
+            );
             // It will try to hit the network or crash due to missing config. We race it to prevent hanging.
             await Promise.race([
                 bot.start(),
@@ -94,6 +94,6 @@ describe("MarketSpawner Characterization (Pre-Extraction)", () => {
 
         expect(crashed).toBe(true);
 
-        try { await bot.stop(); } catch(e) {}
+        try { await bot?.stop(); } catch(e) {}
     });
 });
