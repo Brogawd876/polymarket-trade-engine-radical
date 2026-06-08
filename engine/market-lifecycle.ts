@@ -159,6 +159,7 @@ export class MarketLifecycle {
   private _setupPromise: Promise<void> | null = null;
   private _cancelingOrderIds = new Set<string>();
   private _lastLiveCancelGateLogMs = Number.NEGATIVE_INFINITY;
+  private _isInvalid = false;
 
   readonly slug: string;
   private readonly apiQueue: APIQueue;
@@ -1399,9 +1400,13 @@ export class MarketLifecycle {
         );
       }
     })()
-      .catch((e) =>
-        this._log(`[${this.slug}] _placeWithRetry error: ${e}`, "red"),
-      )
+      .catch((e) => {
+        if (e instanceof Error && e.message.includes("invariant violation")) {
+          this._triggerFatalError(e);
+        } else {
+          this._log(`[${this.slug}] _placeWithRetry error: ${e}`, "red");
+        }
+      })
       .finally(() => {
         this._inFlight--;
       });
@@ -1822,7 +1827,23 @@ export class MarketLifecycle {
     return false;
   }
 
+  private _triggerFatalError(e: Error): void {
+    this._log(`[${this.slug}] FATAL ERROR: ${e.message}`, "red");
+    this._isInvalid = true;
+    this._telemetry.push({
+      ts: this._clock.nowMs(),
+      type: "INVALID_RUN",
+      payload: { reason: e.message }
+    });
+    this._setState("DONE");
+  }
+
   private _computePnl(): void {
+    if (this._isInvalid) {
+      this._log(`[${this.slug}] Skipping PnL computation for invalid run.`, "red");
+      throw new Error("Run marked as invalid. PnL suppressed.");
+    }
+    
     let pnl = 0;
     const held = new Map<string, number>();
 

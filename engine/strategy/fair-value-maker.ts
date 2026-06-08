@@ -231,17 +231,8 @@ export const fairValueMaker: Strategy = async (ctx) => {
     const availableUp = ctx.getAvailableShares ? ctx.getAvailableShares(upTokenId) : Math.max(0, grossOwnedUp - soldUp);
     const availableDown = ctx.getAvailableShares ? ctx.getAvailableShares(downTokenId) : Math.max(0, grossOwnedDown - soldDown);
     
-    let pendingSellUp = 0;
-    let pendingSellDown = 0;
-    for (const o of ctx.pendingOrders) {
-      if (o.action === "sell") {
-        if (o.tokenId === upTokenId) pendingSellUp += o.shares;
-        if (o.tokenId === downTokenId) pendingSellDown += o.shares;
-      }
-    }
-    
-    const sellableUp = Math.min(availableUp, Math.max(0, (grossOwnedUp - soldUp) - pendingSellUp));
-    const sellableDown = Math.min(availableDown, Math.max(0, (grossOwnedDown - soldDown) - pendingSellDown));
+    const sellableUp = Math.min(availableUp, Math.max(0, grossOwnedUp - soldUp));
+    const sellableDown = Math.min(availableDown, Math.max(0, grossOwnedDown - soldDown));
     
     // 2. Calculate Avellaneda-style reservation probability.
     const timeFraction = Math.max(0, Math.min(1, remainingSecs / 300));
