@@ -1165,17 +1165,35 @@ export class MarketLifecycle {
 
         // Pre-flight: skip network call for orders the tracker knows will fail
         const retryNext: typeof remaining = [];
+        let availableCash = this._tracker.available;
+        const availableSharesMap = new Map<string, number>();
+
         remaining = remaining.filter((item) => {
-          const ok =
-            item.req.action === "buy"
-              ? this._tracker.canPlaceBuy(item.req.price, item.req.shares)
-              : this._tracker.canPlaceSell(item.req.tokenId, item.req.shares);
-          if (!ok) retryNext.push(item);
-          return ok;
+          if (item.req.action === "buy") {
+            const cost = item.req.price * item.req.shares;
+            if (availableCash >= cost) {
+              availableCash -= cost;
+              return true;
+            } else {
+              retryNext.push(item);
+              return false;
+            }
+          } else {
+            if (!availableSharesMap.has(item.req.tokenId)) {
+              availableSharesMap.set(item.req.tokenId, this._tracker.availableShares(item.req.tokenId));
+            }
+            const availShares = availableSharesMap.get(item.req.tokenId)!;
+            if (availShares >= item.req.shares) {
+              availableSharesMap.set(item.req.tokenId, availShares - item.req.shares);
+              return true;
+            } else {
+              retryNext.push(item);
+              return false;
+            }
+          }
         });
         if (remaining.length === 0) {
           if (retryCount === 0) {
-            // log if balance too low, take 0 item assuming all item kinds are same from postOrder
             const kind = retryNext[0]!.req.action === "buy" ? "buy" : "sell";
             this._log(
               `[${this.slug}] Retry stopped: wallet balance too low to place ${kind}`,
@@ -1196,6 +1214,20 @@ export class MarketLifecycle {
           continue;
         }
 
+        // Lock funds/shares optimistically before async network call to prevent concurrent overspending
+        const optimisticOrderIds = remaining.map(() => crypto.randomUUID());
+        for (let i = 0; i < remaining.length; i++) {
+          const item = remaining[i]!;
+          const tempId = optimisticOrderIds[i]!;
+          const side = this._side(item.req.tokenId);
+          const label = `[${this.slug}] ${item.req.action.toUpperCase()} ${side} @ ${item.req.price} (optimistic)`;
+          if (item.req.action === "buy") {
+            this._tracker.lockForBuy(tempId, item.req.price, item.req.shares, label);
+          } else {
+            this._tracker.lockForSell(tempId, item.req.tokenId, item.req.shares, label);
+          }
+        }
+
         const placed = await this.client.postMultipleOrders(
           remaining.map((r) => ({
             ...r.req,
@@ -1208,15 +1240,24 @@ export class MarketLifecycle {
         for (let i = 0; i < placed.length; i++) {
           const p = placed[i];
           const item = remaining[i]!;
+          const tempId = optimisticOrderIds[i]!;
+          
           if (!p || !p.orderId) {
+            // Unlock optimistic reservation on failure
+            const side = this._side(item.req.tokenId);
+            const label = `[${this.slug}] ${item.req.action.toUpperCase()} ${side} @ ${item.req.price} (optimistic)`;
+            if (item.req.action === "buy") {
+              this._tracker.unlockBuy(tempId, label);
+            } else {
+              this._tracker.unlockSell(tempId, label);
+            }
+
             this._log(`[placement] Order failed: ${p?.errorMsg}`, "red");
             if (
               p?.errorMsg?.includes("not enough balance") &&
               this._clock.nowMs() < this.slotEndMs &&
               retryCount < maxRetries
             ) {
-
-              // Parse actual balance from CLOB error and adjust shares
               const balMatch = p.errorMsg.match(
                 /balance:\s*(\d+).*?order amount:\s*(\d+)/,
               );
@@ -1231,8 +1272,6 @@ export class MarketLifecycle {
             } else {
               const reason = p?.errorMsg ?? "unknown";
               const intent = intents.get(item);
-              const side =
-                item.req.tokenId === this._clobTokenIds?.[0] ? "UP" : "DOWN";
               this._log(
                 `[${this.slug}] Order placement failed (${item.req.action.toUpperCase()} ${side} @ ${item.req.price}): ${reason}`,
                 "red",
@@ -1245,7 +1284,19 @@ export class MarketLifecycle {
             }
             continue;
           }
-          this._trackerLock(item, p);
+          
+          // Rename the optimistic reservation to the real orderId
+          // This ensures no gap in reservation tracking
+          const side = this._side(item.req.tokenId);
+          const label = `[${this.slug}] ${item.req.action.toUpperCase()} ${side} @ ${item.req.price}`;
+          if (item.req.action === "buy") {
+            this._tracker.unlockBuy(tempId, label + " (temp)");
+            this._tracker.lockForBuy(p.orderId, item.req.price, item.req.shares, label);
+          } else {
+            this._tracker.unlockSell(tempId, label + " (temp)");
+            this._tracker.lockForSell(p.orderId, item.req.tokenId, item.req.shares, label);
+          }
+
           this._pendingOrders.push({
             orderId: p.orderId,
             tokenId: item.req.tokenId,

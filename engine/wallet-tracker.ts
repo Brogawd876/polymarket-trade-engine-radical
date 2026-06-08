@@ -48,6 +48,12 @@ export class WalletTracker {
 
   lockForBuy(orderId: string, price: number, shares: number, label: string): void {
     const cost = price * shares;
+    const available = this.available;
+    if (cost > available + EPSILON) {
+      throw new Error(
+        `wallet invariant violation: cannot reserve $${cost.toFixed(2)} for buy; available=$${available.toFixed(2)}`
+      );
+    }
     this._reservedForBuys.set(orderId, cost);
     this._log(
       `[wallet] lockBuy ${label}: -$${cost.toFixed(2)} | avail=$${this.available.toFixed(2)}`,
