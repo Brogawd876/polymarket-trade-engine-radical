@@ -73,10 +73,10 @@ export interface RiskGate {
 
 export const DEFAULT_SIMULATION_RISK_LIMITS: StaticRiskLimits = {
   allowProduction: false,
-  maxOrderNotionalUsd: 10,
-  maxSharesPerOrder: 25,
-  maxOpenExposureUsd: 50,
-  maxSessionLossUsd: 3,
+  maxOrderNotionalUsd: 500,
+  maxSharesPerOrder: 2000,
+  maxOpenExposureUsd: 1000,
+  maxSessionLossUsd: 50,
   maxFeedFreshnessMs: 1000,
   maxOracleLagMs: 60_000,
   noTradeLastMs: 5000,
@@ -404,8 +404,8 @@ export type AggregatedRiskGateOptions = {
 
 export const DEFAULT_PRODUCTION_RISK_LIMITS: StaticRiskLimits = {
   allowProduction: true,
-  maxOrderNotionalUsd: 50,
-  maxSharesPerOrder: 100,
+  maxOrderNotionalUsd: 100,
+  maxSharesPerOrder: 500,
   maxOpenExposureUsd: 250,
   maxSessionLossUsd: 10,
   maxFeedFreshnessMs: 500, // Strict 500ms
@@ -483,3 +483,4 @@ export class AggregatedRiskGate implements RiskGate {
     };
   }
 }
+

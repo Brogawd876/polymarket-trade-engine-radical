@@ -67,6 +67,10 @@ export interface FairValueMakerConfig {
   unstableBasisDownsize?: boolean;
   /** Threshold (USD) at which the basis is considered unstable. Default: 5.0. */
   unstableBasisThreshold?: number;
+  /** Minimum profit edge required to place a SELL scalp. */
+  minExitEdge?: number;
+  /** If true, enables two-sided quoting (Active Exit/Scalp). */
+  activeExit?: boolean;
 }
 
 const DEFAULT_CONFIG: Required<FairValueMakerConfig> = {
@@ -79,6 +83,8 @@ const DEFAULT_CONFIG: Required<FairValueMakerConfig> = {
   inventorySkew: 0.05, // Skew price by 5% of fair value per maxInventory unit
   maxInventory: 100,
   minEdge: 0.005,
+  minExitEdge: 0.005,
+  activeExit: true,
   makerRebateEstimate: 0,
   minImbalance: -0.5,
   minCvd10s: -100,
@@ -219,6 +225,13 @@ export const fairValueMaker: Strategy = async (ctx) => {
     const bidPriceUp = Number.isFinite(rawBidPriceUp) ? makerSafePrice(ctx, "UP", "buy", rawBidPriceUp, config.makerOnly) : null;
     const bidPriceDown = Number.isFinite(rawBidPriceDown) ? makerSafePrice(ctx, "DOWN", "buy", rawBidPriceDown, config.makerOnly) : null;
 
+    // Active Exit: Calculate profitable SELL targets if inventory exists
+    let rawAskPriceUp = parseFloat((adjustedProbUp + config.minExitEdge).toFixed(2));
+    let rawAskPriceDown = parseFloat(((1 - adjustedProbUp) + config.minExitEdge).toFixed(2));
+    
+    const askPriceUp = (config.activeExit && inventoryUp > 0) ? makerSafePrice(ctx, "UP", "sell", rawAskPriceUp, config.makerOnly) : null;
+    const askPriceDown = (config.activeExit && inventoryUp < 0) ? makerSafePrice(ctx, "DOWN", "sell", rawAskPriceDown, config.makerOnly) : null;
+
     // 3.5. Position Sizing — base
     // For fixed mode: targetShares is a constant share count.
     // For pct_of_balance mode: targetNotional = balance × pct; shares = notional / sidePrice.
@@ -300,6 +313,42 @@ export const fairValueMaker: Strategy = async (ctx) => {
     const TOLERANCE = 0.01;
     const EPSILON = 0.0001;
 
+    // ── Active Exit Logic (SELLS) ──────────────────────────────────────────────
+    if (askPriceUp !== null && askPriceUp < 1.0) {
+      let existingSellUp = ctx.pendingOrders.find(o => o.tokenId === upTokenId && o.action === "sell");
+      if (!existingSellUp || Math.abs(existingSellUp.price - askPriceUp) > (TOLERANCE + EPSILON)) {
+        if (existingSellUp) ctx.cancelOrders([existingSellUp.orderId]);
+        ordersToPost.push({
+          req: {
+            tokenId: upTokenId,
+            action: "sell",
+            price: askPriceUp,
+            shares: Math.abs(inventoryUp),
+            orderType: "GTC",
+          },
+          expireAtMs: ctx.clock.nowMs() + 10000,
+        });
+      }
+    }
+
+    if (askPriceDown !== null && askPriceDown < 1.0) {
+      let existingSellDown = ctx.pendingOrders.find(o => o.tokenId === downTokenId && o.action === "sell");
+      if (!existingSellDown || Math.abs(existingSellDown.price - askPriceDown) > (TOLERANCE + EPSILON)) {
+        if (existingSellDown) ctx.cancelOrders([existingSellDown.orderId]);
+        ordersToPost.push({
+          req: {
+            tokenId: downTokenId,
+            action: "sell",
+            price: askPriceDown,
+            shares: Math.abs(inventoryUp), // inventoryUp is negative for DOWN tokens
+            orderType: "GTC",
+          },
+          expireAtMs: ctx.clock.nowMs() + 10000,
+        });
+      }
+    }
+
+    // ── Maker Quoting Logic (BUYS) ─────────────────────────────────────────────
     const evUp = quoteEv(adjustedProbUp, bidPriceUp, feeRateUp, config.makerRebateEstimate);
     const evDown = quoteEv(1 - adjustedProbUp, bidPriceDown, feeRateDown, config.makerRebateEstimate);
     const flow = ctx.orderFlow?.latest() ?? null;
@@ -429,19 +478,24 @@ export const fairValueMaker: Strategy = async (ctx) => {
                 orderType: "GTC" as const,
               },
               expireAtMs: ctx.clock.nowMs() + 10000,
-              onFilled: config.fallingKnifeBlock ? (_filledShares) => {
-                // Compound falling-knife detection — only live-available signals, no replay leakage
-                const isAdverse = checkFallingKnifeAdverse("UP", capturedFillPriceUp);
-                if (isAdverse) {
-                  consecutiveAdverseUp += 1;
-                  if (consecutiveAdverseUp >= config.fallingKnifeWindow) {
-                    sideBlockedUp = true;
-                    ctx.log(`[fair-value] v1.3.0 falling-knife TRIGGERED: UP blocked after ${consecutiveAdverseUp} adverse fills @ ${capturedFillPriceUp.toFixed(3)}`, "yellow");
+              onFilled: (filledShares) => {
+                // Immediate re-evaluation for Active Exit
+                evaluateQuotes();
+
+                if (config.fallingKnifeBlock) {
+                  // Compound falling-knife detection — only live-available signals, no replay leakage
+                  const isAdverse = checkFallingKnifeAdverse("UP", capturedFillPriceUp);
+                  if (isAdverse) {
+                    consecutiveAdverseUp += 1;
+                    if (consecutiveAdverseUp >= config.fallingKnifeWindow) {
+                      sideBlockedUp = true;
+                      ctx.log(`[fair-value] v1.3.0 falling-knife TRIGGERED: UP blocked after ${consecutiveAdverseUp} adverse fills @ ${capturedFillPriceUp.toFixed(3)}`, "yellow");
+                    }
+                  } else {
+                    consecutiveAdverseUp = 0; // Reset on non-adverse fill
                   }
-                } else {
-                  consecutiveAdverseUp = 0; // Reset on non-adverse fill
                 }
-              } : undefined,
+              },
               onFailed: (reason) => {
                 inFlightUp = false;
                 recordExposureBlock(ctx, exposureBlockCooldowns, exposureKey, reason, config.exposureBlockCooldownMs);
@@ -483,19 +537,24 @@ export const fairValueMaker: Strategy = async (ctx) => {
                 orderType: "GTC" as const,
               },
               expireAtMs: ctx.clock.nowMs() + 10000,
-              onFilled: config.fallingKnifeBlock ? (_filledShares) => {
-                // Compound falling-knife detection — only live-available signals, no replay leakage
-                const isAdverse = checkFallingKnifeAdverse("DOWN", capturedFillPriceDown);
-                if (isAdverse) {
-                  consecutiveAdverseDown += 1;
-                  if (consecutiveAdverseDown >= config.fallingKnifeWindow) {
-                    sideBlockedDown = true;
-                    ctx.log(`[fair-value] v1.3.0 falling-knife TRIGGERED: DOWN blocked after ${consecutiveAdverseDown} adverse fills @ ${capturedFillPriceDown.toFixed(3)}`, "yellow");
+              onFilled: (filledShares) => {
+                // Immediate re-evaluation for Active Exit
+                evaluateQuotes();
+
+                if (config.fallingKnifeBlock) {
+                  // Compound falling-knife detection — only live-available signals, no replay leakage
+                  const isAdverse = checkFallingKnifeAdverse("DOWN", capturedFillPriceDown);
+                  if (isAdverse) {
+                    consecutiveAdverseDown += 1;
+                    if (consecutiveAdverseDown >= config.fallingKnifeWindow) {
+                      sideBlockedDown = true;
+                      ctx.log(`[fair-value] v1.3.0 falling-knife TRIGGERED: DOWN blocked after ${consecutiveAdverseDown} adverse fills @ ${capturedFillPriceDown.toFixed(3)}`, "yellow");
+                    }
+                  } else {
+                    consecutiveAdverseDown = 0;
                   }
-                } else {
-                  consecutiveAdverseDown = 0;
                 }
-              } : undefined,
+              },
               onFailed: (reason) => {
                 inFlightDown = false;
                 recordExposureBlock(ctx, exposureBlockCooldowns, exposureKey, reason, config.exposureBlockCooldownMs);
