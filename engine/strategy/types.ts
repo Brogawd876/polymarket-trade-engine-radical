@@ -78,6 +78,8 @@ export type StrategyContext = {
   ticker: TickerTracker;
   /** Read-only access to market open/close price data when available. */
   getMarketResult: () => MarketData | undefined;
+  /** Access to the available unreserved shares for a specific token in the wallet. */
+  getAvailableShares: (tokenId: string) => number;
   /** Access to the normalized resolution source truth (Chainlink-style). */
   resolution?: ResolutionSourceAdapter;
   /** Access to the normalized Polymarket venue state (orderbook, fees). */

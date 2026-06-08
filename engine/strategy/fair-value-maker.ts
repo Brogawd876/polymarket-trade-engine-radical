@@ -123,6 +123,8 @@ export const fairValueMaker: Strategy = async (ctx) => {
 
   let inFlightUp = false;
   let inFlightDown = false;
+  let inFlightSellUp = false;
+  let inFlightSellDown = false;
 
   // ── v1.3.0 Profit-Selective State ────────────────────────────────────────────
   // Falling-knife tracking: count consecutive fills where mid-price at fill time
@@ -191,18 +193,55 @@ export const fairValueMaker: Strategy = async (ctx) => {
       return;
     }
 
-    // 1. Determine current inventory
+    // 1. Determine current inventory and average entry prices
     const upTokenId = ctx.clobTokenIds[0];
     const downTokenId = ctx.clobTokenIds[1];
     
-    let inventoryUp = 0;
+    let grossOwnedUp = 0;
+    let costUp = 0;
+    let soldUp = 0;
+    
+    let grossOwnedDown = 0;
+    let costDown = 0;
+    let soldDown = 0;
+
     for (const h of ctx.orderHistory) {
       if (h.tokenId === upTokenId) {
-        inventoryUp += (h.action === "buy" ? h.shares : -h.shares);
+        if (h.action === "buy") {
+          grossOwnedUp += h.shares;
+          costUp += (h.price * h.shares);
+        } else {
+          soldUp += h.shares;
+        }
       } else if (h.tokenId === downTokenId) {
-        inventoryUp += (h.action === "buy" ? -h.shares : h.shares);
+        if (h.action === "buy") {
+          grossOwnedDown += h.shares;
+          costDown += (h.price * h.shares);
+        } else {
+          soldDown += h.shares;
+        }
       }
     }
+    
+    const inventoryUp = (grossOwnedUp - soldUp) - (grossOwnedDown - soldDown);
+    const avgEntryPriceUp = grossOwnedUp > 0 ? (costUp / grossOwnedUp) : 0;
+    const avgEntryPriceDown = grossOwnedDown > 0 ? (costDown / grossOwnedDown) : 0;
+    
+    // Calculate sellable shares based on wallet availability and pending reservations
+    const availableUp = ctx.getAvailableShares ? ctx.getAvailableShares(upTokenId) : Math.max(0, grossOwnedUp - soldUp);
+    const availableDown = ctx.getAvailableShares ? ctx.getAvailableShares(downTokenId) : Math.max(0, grossOwnedDown - soldDown);
+    
+    let pendingSellUp = 0;
+    let pendingSellDown = 0;
+    for (const o of ctx.pendingOrders) {
+      if (o.action === "sell") {
+        if (o.tokenId === upTokenId) pendingSellUp += o.shares;
+        if (o.tokenId === downTokenId) pendingSellDown += o.shares;
+      }
+    }
+    
+    const sellableUp = Math.min(availableUp, Math.max(0, (grossOwnedUp - soldUp) - pendingSellUp));
+    const sellableDown = Math.min(availableDown, Math.max(0, (grossOwnedDown - soldDown) - pendingSellDown));
     
     // 2. Calculate Avellaneda-style reservation probability.
     const timeFraction = Math.max(0, Math.min(1, remainingSecs / 300));
@@ -226,11 +265,11 @@ export const fairValueMaker: Strategy = async (ctx) => {
     const bidPriceDown = Number.isFinite(rawBidPriceDown) ? makerSafePrice(ctx, "DOWN", "buy", rawBidPriceDown, config.makerOnly) : null;
 
     // Active Exit: Calculate profitable SELL targets if inventory exists
-    let rawAskPriceUp = parseFloat((adjustedProbUp + config.minExitEdge).toFixed(2));
-    let rawAskPriceDown = parseFloat(((1 - adjustedProbUp) + config.minExitEdge).toFixed(2));
+    let rawAskPriceUp = parseFloat(Math.max(avgEntryPriceUp + config.minExitEdge, adjustedProbUp + config.minExitEdge).toFixed(2));
+    let rawAskPriceDown = parseFloat(Math.max(avgEntryPriceDown + config.minExitEdge, (1 - adjustedProbUp) + config.minExitEdge).toFixed(2));
     
-    const askPriceUp = (config.activeExit && inventoryUp > 0) ? makerSafePrice(ctx, "UP", "sell", rawAskPriceUp, config.makerOnly) : null;
-    const askPriceDown = (config.activeExit && inventoryUp < 0) ? makerSafePrice(ctx, "DOWN", "sell", rawAskPriceDown, config.makerOnly) : null;
+    const askPriceUp = (config.activeExit && sellableUp >= config.minShares) ? makerSafePrice(ctx, "UP", "sell", rawAskPriceUp, config.makerOnly) : null;
+    const askPriceDown = (config.activeExit && sellableDown >= config.minShares) ? makerSafePrice(ctx, "DOWN", "sell", rawAskPriceDown, config.makerOnly) : null;
 
     // 3.5. Position Sizing — base
     // For fixed mode: targetShares is a constant share count.
@@ -314,38 +353,60 @@ export const fairValueMaker: Strategy = async (ctx) => {
     const EPSILON = 0.0001;
 
     // ── Active Exit Logic (SELLS) ──────────────────────────────────────────────
+    let existingSellUp = ctx.pendingOrders.find(o => o.tokenId === upTokenId && o.action === "sell");
     if (askPriceUp !== null && askPriceUp < 1.0) {
-      let existingSellUp = ctx.pendingOrders.find(o => o.tokenId === upTokenId && o.action === "sell");
-      if (!existingSellUp || Math.abs(existingSellUp.price - askPriceUp) > (TOLERANCE + EPSILON)) {
-        if (existingSellUp) ctx.cancelOrders([existingSellUp.orderId]);
+      if (existingSellUp && Math.abs(existingSellUp.price - askPriceUp) > (TOLERANCE + EPSILON)) {
+        ctx.log(`[fair-value] Canceling existing UP sell quote: ${existingSellUp.price} -> new target ${askPriceUp}`, "dim");
+        ctx.cancelOrders([existingSellUp.orderId]);
+      } else if (!existingSellUp && sellableUp >= config.minShares && !inFlightSellUp) {
+        inFlightSellUp = true;
         ordersToPost.push({
           req: {
             tokenId: upTokenId,
             action: "sell",
             price: askPriceUp,
-            shares: Math.abs(inventoryUp),
+            shares: sellableUp,
             orderType: "GTC",
           },
           expireAtMs: ctx.clock.nowMs() + 10000,
+          onFailed: () => {
+            inFlightSellUp = false;
+          },
+          onFilled: () => {
+            // we don't reset inFlight here because pendingOrders update will handle it or next evaluateQuotes
+          }
         });
       }
+    } else if (existingSellUp) {
+      inFlightSellUp = false;
+      ctx.cancelOrders([existingSellUp.orderId]);
     }
 
+    let existingSellDown = ctx.pendingOrders.find(o => o.tokenId === downTokenId && o.action === "sell");
     if (askPriceDown !== null && askPriceDown < 1.0) {
-      let existingSellDown = ctx.pendingOrders.find(o => o.tokenId === downTokenId && o.action === "sell");
-      if (!existingSellDown || Math.abs(existingSellDown.price - askPriceDown) > (TOLERANCE + EPSILON)) {
-        if (existingSellDown) ctx.cancelOrders([existingSellDown.orderId]);
+      if (existingSellDown && Math.abs(existingSellDown.price - askPriceDown) > (TOLERANCE + EPSILON)) {
+        ctx.log(`[fair-value] Canceling existing DOWN sell quote: ${existingSellDown.price} -> new target ${askPriceDown}`, "dim");
+        ctx.cancelOrders([existingSellDown.orderId]);
+      } else if (!existingSellDown && sellableDown >= config.minShares && !inFlightSellDown) {
+        inFlightSellDown = true;
         ordersToPost.push({
           req: {
             tokenId: downTokenId,
             action: "sell",
             price: askPriceDown,
-            shares: Math.abs(inventoryUp), // inventoryUp is negative for DOWN tokens
+            shares: sellableDown,
             orderType: "GTC",
           },
           expireAtMs: ctx.clock.nowMs() + 10000,
+          onFailed: () => {
+            inFlightSellDown = false;
+          },
+          onFilled: () => {}
         });
       }
+    } else if (existingSellDown) {
+      inFlightSellDown = false;
+      ctx.cancelOrders([existingSellDown.orderId]);
     }
 
     // ── Maker Quoting Logic (BUYS) ─────────────────────────────────────────────

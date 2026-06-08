@@ -281,6 +281,17 @@ export class ReplayRunner {
         }
       });
       return { ticks: tickCount, completed: true, finalTimeMs: this.clock.nowMs() };
+    } catch (e: any) {
+      if (e.message && e.message.includes("wallet invariant violation")) {
+        console.error(`[ReplayRunner] INVALID_RUN: ${e.message}`);
+        this.telemetry.push({
+          ts: this.clock.nowMs(),
+          type: "INVALID_RUN",
+          payload: { reason: e.message }
+        });
+        throw e;
+      }
+      throw e;
     } finally {
       unsubscribeReplayEvents();
     }

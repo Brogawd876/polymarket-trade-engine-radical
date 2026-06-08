@@ -161,9 +161,14 @@ export class SessionManager {
             this._activePreset = null;
           }
         }, 3000);
-      }).catch((e) => {
+      }).catch((e: any) => {
         this._sessionState = "failed";
         this._blockReason = e.message;
+        if (e.message && e.message.includes("wallet invariant violation")) {
+          console.error(`[SessionManager] INVALID_RUN: ${e.message}`);
+        } else {
+          console.error("[SessionManager] Replay loop crashed:", e);
+        }
       });
       
     } catch (e: any) {

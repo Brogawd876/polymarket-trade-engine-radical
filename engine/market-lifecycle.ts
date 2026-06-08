@@ -625,7 +625,9 @@ export class MarketLifecycle {
       slotEndMs: this.slotEndMs,
       clobTokenIds: this._clobTokenIds,
       orderBook: this._orderBook,
-      get walletBalanceUsd() { return self._tracker.balance; },
+      get walletBalanceUsd() {
+        return self._tracker.available;
+      },
       get openExposureUsd() { return self._openExposureUsd(); },
       get maxOpenExposureUsd() { 
         return (self._riskGate as any).staticLimits?.maxOpenExposureUsd ?? 50; 
@@ -658,6 +660,7 @@ export class MarketLifecycle {
         const slot = slotFromSlug(this.slug);
         return this.apiQueue.marketResult.get(slot.startTime);
       },
+      getAvailableShares: (tokenId: string) => this._tracker.availableShares(tokenId),
       resolution: this._resolution,
       venue: this._venue,
       predictive: {

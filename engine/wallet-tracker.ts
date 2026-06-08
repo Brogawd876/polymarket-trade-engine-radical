@@ -82,6 +82,12 @@ export class WalletTracker {
       `[wallet] buyFill(${orderId}): balance=$${this._balance.toFixed(2)}, ` +
         `${tokenId.slice(0, 8)}... shares: ${current} + ${shareCount} = ${current + shareCount}`,
     );
+
+    if (this._balance < -EPSILON) {
+      throw new Error(
+        `wallet invariant violation: negative balance after buy: $${this._balance.toFixed(2)}`,
+      );
+    }
   }
 
   // -- Sell lifecycle --
