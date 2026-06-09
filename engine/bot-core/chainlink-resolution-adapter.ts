@@ -162,7 +162,9 @@ export class ChainlinkResolutionAdapter
   }
 
   latestAnchor(): ResolutionPriceEvent | null {
-    if (!this.latchedAnchor) return null;
+    if (!this.latchedAnchor) {
+      return null;
+    }
     if (!this.isEventStale(this.latchedAnchor)) return this.latchedAnchor;
     return {
       ...this.latchedAnchor,
@@ -177,7 +179,68 @@ export class ChainlinkResolutionAdapter
   }
 
   async priceToBeat(round: RoundWindow): Promise<ResolutionPriceEvent | null> {
+    if (this.clock.nowMs() < round.startTimeMs) {
+      return null;
+    }
+
     // Check if we already have a latched anchor for this specific round
+    if (this.latchedAnchor && this.latchedAnchor.round?.slug === round.slug) {
+      if (this.latchedAnchor.source === "polymarket-crypto-price-api") {
+        return this.latestAnchor();
+      }
+    }
+
+    try {
+      const variantMap: Record<string, string> = { "5m": "fiveminute", "15m": "fifteen" };
+      const variant = variantMap[round.window] ?? "fiveminute";
+      const assetConfig = Env.getAssetConfig();
+      const url = new URL("https://polymarket.com/api/crypto/crypto-price");
+      url.searchParams.set("symbol", assetConfig.apiSymbol);
+      url.searchParams.set("variant", variant);
+      url.searchParams.set("eventStartTime", round.startTimeMs.toString());
+      url.searchParams.set("endDate", round.endTimeMs.toString());
+      console.warn(`[Chainlink] Requesting Polymarket API: ${url.toString()} (startTimeMs=${round.startTimeMs})`);
+
+      const res = await fetch(url.toString(), { 
+        headers: { 
+          Accept: "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        } 
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.openPrice) {
+          const anchor = {
+            id: `poly-api-open-${round.slug}`,
+            role: "resolution" as const,
+            source: "polymarket-crypto-price-api",
+            sourceType: "polymarket_crypto_price_api",
+            asset: this.asset,
+            kind: "open" as const,
+            price: data.openPrice,
+            priceToBeat: data.openPrice,
+            clock: createEventClock({ receivedAtMs: this.clock.nowMs(), processedAtMs: this.clock.nowMs(), sourceTimestampMs: round.startTimeMs }),
+            quality: "live" as const,
+            stalenessStatus: "fresh" as const,
+            freshnessMs: 0,
+            lagMs: 0,
+            round,
+          };
+          this.latchedAnchor = anchor as unknown as ResolutionPriceEvent;
+          return this.latestAnchor();
+        } else {
+          console.warn(`[Chainlink] Fetch OK but no openPrice for URL ${url.toString()}:`, data);
+        }
+      } else {
+        console.warn(`[Chainlink] Fetch failed with status ${res.status}: ${res.statusText}`);
+        const text = await res.text();
+        console.warn(`[Chainlink] Fetch response body: ${text.substring(0, 200)}`);
+      }
+    } catch (e) {
+      console.warn("Failed to fetch Polymarket API anchor:", e);
+    }
+
+    // If we already have a latched fallback for this round, just return it.
     if (this.latchedAnchor && this.latchedAnchor.round?.slug === round.slug) {
       return this.latestAnchor();
     }
@@ -198,8 +261,9 @@ export class ChainlinkResolutionAdapter
       priceToBeat: anchorSource.price,
       round,
     };
+    
     this.latchedAnchor = anchor;
-    return anchor;
+    return this.latestAnchor();
   }
 
   async closePrice(round: RoundWindow): Promise<ResolutionPriceEvent | null> {

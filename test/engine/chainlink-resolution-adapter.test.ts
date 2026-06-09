@@ -118,10 +118,10 @@ describe("ChainlinkResolutionAdapter", () => {
 
   test("priceToBeat returns null when all observed events are stale", async () => {
     const clock = new VirtualClock();
-    clock.setNowMs(1_778_891_500_000); // very far in the future
+    clock.setNowMs(100_500_000); // very far in the future
     const reader = new MockReader();
     // Event is from much earlier
-    reader.round = { ...reader.round, updatedAt: 1_778_891_401n };
+    reader.round = { ...reader.round, updatedAt: 100_000n };
 
     const adapter = new ChainlinkResolutionAdapter({
       reader,
@@ -135,8 +135,8 @@ describe("ChainlinkResolutionAdapter", () => {
       asset: "btc" as const,
       window: "5m" as const,
       // Round started before the event, so timestamp filter passes
-      startTimeMs: 1_778_891_402_000,
-      endTimeMs: 1_778_891_702_000,
+      startTimeMs: 100_100_000,
+      endTimeMs: 100_400_000,
     };
 
     // Event quality is "stale" so findOpeningAnchor should exclude it
@@ -146,9 +146,9 @@ describe("ChainlinkResolutionAdapter", () => {
 
   test("priceToBeat returns anchor when a valid event exists before round start", async () => {
     const clock = new VirtualClock();
-    clock.setNowMs(1_778_891_405_000);
+    clock.setNowMs(100_004_000);
     const reader = new MockReader();
-    reader.round = { ...reader.round, updatedAt: 1_778_891_401n }; // 4s lag, fresh
+    reader.round = { ...reader.round, updatedAt: 100_000n }; // 4s lag, fresh
 
     const adapter = new ChainlinkResolutionAdapter({ reader, clock, staleAfterMs: 60_000 });
     await adapter.pollOnce();
@@ -157,10 +157,11 @@ describe("ChainlinkResolutionAdapter", () => {
       slug: "fresh-round",
       asset: "btc" as const,
       window: "5m" as const,
-      startTimeMs: 1_778_891_402_000, // round start AFTER event updatedAt (1_778_891_401_000ms)
-      endTimeMs: 1_778_891_702_000,
+      startTimeMs: 100_001_000, // round start AFTER event updatedAt (100_000_000ms)
+      endTimeMs: 100_301_000,
     };
 
+    clock.setNowMs(100_001_000); // Advance clock to roundStart so priceToBeat allows it
     const anchor = await adapter.priceToBeat(round);
     expect(anchor).not.toBeNull();
     expect(anchor?.kind).toBe("open");

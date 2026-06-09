@@ -320,7 +320,7 @@ export class SimUserChannel extends UserChannelBase {
     this._getBook = opts.getBook;
     this._cancelCallbacks = opts.cancelCallbacks ?? null;
     this._clock = opts.clock ?? new RealClock();
-    this._conservativeFill = opts.conservativeFill ?? false;
+    this._conservativeFill = opts.conservativeFill ?? true;
   }
 
   subscribe(_conditionId: string): void {
@@ -360,9 +360,8 @@ export class SimUserChannel extends UserChannelBase {
     if (!bookData) return false;
 
     const isConservative =
-      this._conservativeFill ||
-      process.env.CONSERVATIVE_FILL === "true" ||
-      process.env.PESSIMISTIC_FILL === "true";
+      this._conservativeFill !== false &&
+      process.env.OPTIMISTIC_FILL !== "true";
 
     if (isConservative && "bids" in bookData && "asks" in bookData) {
       const model = new ConservativeMakerFillModel();

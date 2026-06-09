@@ -462,7 +462,11 @@ export class AggregatedRiskGate implements RiskGate {
     }
 
     if (snapshot.predictiveAggregate?.disagreement === true) {
-      reasons.push("predictive aggregate disagreement is true");
+      // Bypass disagreement gate ONLY for the raw ungated benchmark in replay mode
+      const isRawReplay = !snapshot.productionEnabled && intent.strategyName === "fvm-v1.1.0-raw-ungated";
+      if (!isRawReplay) {
+        reasons.push("predictive aggregate disagreement is true");
+      }
     }
 
     const leadLag = snapshot.leadLag;

@@ -179,6 +179,7 @@ describe("Chainlink Mid-Round Startup Hardening", () => {
         endTimeMs: roundStart + 300_000
     } as any;
 
+    clock.setNowMs(roundStart);
     expect((await adapter.priceToBeat(round))?.price).toBe(59900);
 
     (adapter as any).latestEvent = {
@@ -221,6 +222,7 @@ describe("Chainlink Mid-Round Startup Hardening", () => {
         endTimeMs: 400_000
     } as any;
 
+    clock.setNowMs(100_000);
     const anchor = await adapter.priceToBeat(round);
     expect(anchor?.price).toBe(58000);
   });

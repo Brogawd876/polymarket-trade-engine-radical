@@ -85,9 +85,27 @@ export class PolymarketVenueAdapter implements VenueDataAdapter {
       if (!market) return null;
 
       const tokenIds: string[] = JSON.parse(market.clobTokenIds);
+      const outcomes: string[] = market.outcomes ? JSON.parse(market.outcomes) : [];
+
+      let upTokenId: string | undefined;
+      let downTokenId: string | undefined;
+
+      if (outcomes.length === tokenIds.length && tokenIds.length >= 2) {
+        for (let i = 0; i < outcomes.length; i++) {
+          const outcome = outcomes[i]?.toLowerCase();
+          if (outcome === "up") upTokenId = tokenIds[i];
+          else if (outcome === "down") downTokenId = tokenIds[i];
+        }
+      }
+
+      if (!upTokenId || !downTokenId) {
+        console.warn(`[VenueAdapter] Invalid token mapping for ${round.slug}. Outcomes: ${market.outcomes}, TokenIds: ${market.clobTokenIds}`);
+        return null;
+      }
+
       metadata = {
         conditionId: market.conditionId,
-        clobTokenIds: [tokenIds[0]!, tokenIds[1]!],
+        clobTokenIds: [upTokenId, downTokenId],
         feeRateBps: market.feeSchedule?.rate ?? 0,
         closed: market.closed ?? false,
       };

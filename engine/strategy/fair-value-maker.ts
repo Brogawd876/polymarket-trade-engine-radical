@@ -127,10 +127,18 @@ export const fairValueMaker: Strategy = async (ctx) => {
   let isDone = false;
   let lastLogSec = -1;
 
-  let inFlightUp = false;
-  let inFlightDown = false;
-  let inFlightSellUp = false;
-  let inFlightSellDown = false;
+  type OrderMachineState = {
+    status: "idle" | "placing" | "live" | "canceling";
+    orderId?: string;
+    lastUpdateMs: number;
+  };
+
+  const orderState = {
+    "UP:buy": { status: "idle", lastUpdateMs: 0 } as OrderMachineState,
+    "DOWN:buy": { status: "idle", lastUpdateMs: 0 } as OrderMachineState,
+    "UP:sell": { status: "idle", lastUpdateMs: 0 } as OrderMachineState,
+    "DOWN:sell": { status: "idle", lastUpdateMs: 0 } as OrderMachineState,
+  };
 
   // ── v1.3.0 Profit-Selective State ────────────────────────────────────────────
   // Falling-knife tracking: count consecutive fills where mid-price at fill time
@@ -155,32 +163,8 @@ export const fairValueMaker: Strategy = async (ctx) => {
     
     const now = ctx.clock.nowMs();
 
-    // 0. Periodic Wallet & Rebate Sync
-    // Synchronize local state with exchange truth every 5 minutes
-    if (now - lastWalletSyncMs > 5 * 60 * 1000) {
-      lastWalletSyncMs = now;
-      lastRebateFetchMs = now;
-      try {
-        // Parallel sync of USDC, Shares, and Rebates
-        await Promise.all([
-          (ctx as any).client?.updateUSDCBalance?.() ?? Promise.resolve(),
-          ...ctx.clobTokenIds.map(id => (ctx as any).client?.updateAvailableShares?.(id) ?? Promise.resolve()),
-          (async () => {
-            const activity = await (ctx as any).client?.getActivity("MAKER_REBATE");
-            if (activity && Array.isArray(activity)) {
-              let total = 0;
-              for (const item of activity) {
-                if (item.type === "MAKER_REBATE") total += parseFloat(item.amount);
-              }
-              rebatesCollected = total;
-            }
-          })()
-        ]);
-        ctx.log(`[wallet] Full sync complete. USDC=$${ctx.walletBalanceUsd.toFixed(2)}`, "dim");
-      } catch (err: any) {
-        ctx.log(`[wallet] Sync failed: ${err.message}`, "red");
-      }
-    }
+    // 0. (Removed) Periodic Wallet & Rebate Sync was handled via (ctx as any).client
+    // which violates encapsulation. Live syncs should be performed at the engine level.
 
     const quant = ctx.quant?.latest();
     const sigma = quant?.sigma;

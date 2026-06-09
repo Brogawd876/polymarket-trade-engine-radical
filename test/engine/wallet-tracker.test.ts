@@ -146,6 +146,19 @@ describe("onSellFilled", () => {
     );
     expect(t.availableShares(UP)).toBe(2);
   });
+
+  test("partial fill: reduces sell reservation by actual shares filled", () => {
+    const t = makeTracker(10);
+    t.addAvailableShares(UP, 6);
+    t.lockForSell("s1", UP, 6, "test"); // reserves 6
+    t.onSellFilled("s1", UP, 0.60, 2); // fills 2 shares, proceeds 1.20
+    expect(t.balance).toBeCloseTo(11.20);
+    // 6 - 2 = 4 total shares. 6 - 2 = 4 reserved. So available is 0.
+    expect(t.availableShares(UP)).toBe(0);
+    // Unlock remaining 4
+    t.unlockSell("s1", "test");
+    expect(t.availableShares(UP)).toBe(4);
+  });
 });
 
 describe("onResolution", () => {

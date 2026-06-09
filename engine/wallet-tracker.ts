@@ -71,14 +71,21 @@ export class WalletTracker {
 
   /** Buy filled: USDC leaves wallet, shares added optimistically. */
   onBuyFilled(orderId: string, tokenId: string, price: number, shareCount: number): void {
-    const cost = this._reservedForBuys.get(orderId);
-    if (cost != null) {
-      // Normal fill: reservation still held, deduct full reserved cost
-      this._reservedForBuys.delete(orderId);
-      this._balance -= cost;
+    const actualCost = price * shareCount;
+    const reservedCost = this._reservedForBuys.get(orderId);
+    
+    if (reservedCost != null) {
+      // Partial or full fill while reservation is held
+      this._balance -= actualCost;
+      const newReservedCost = reservedCost - actualCost;
+      if (newReservedCost <= EPSILON) {
+        this._reservedForBuys.delete(orderId);
+      } else {
+        this._reservedForBuys.set(orderId, newReservedCost);
+      }
     } else {
       // Partial fill after cancel: reservation already unlocked, deduct actual cost
-      this._balance -= price * shareCount;
+      this._balance -= actualCost;
     }
 
     const current = this._shares.get(tokenId) ?? 0;
@@ -133,7 +140,16 @@ export class WalletTracker {
         `wallet invariant violation: sell fill exceeds held shares for ${tokenId}: held=${current}, fill=${shareCount}`,
       );
     }
-    this._reservedForSells.delete(orderId);
+    
+    const reserved = this._reservedForSells.get(orderId);
+    if (reserved != null) {
+      const newCount = reserved.count - shareCount;
+      if (newCount <= EPSILON) {
+        this._reservedForSells.delete(orderId);
+      } else {
+        this._reservedForSells.set(orderId, { tokenId: reserved.tokenId, count: newCount });
+      }
+    }
 
     const next = Math.max(0, current - shareCount);
     this._shares.set(tokenId, next);
