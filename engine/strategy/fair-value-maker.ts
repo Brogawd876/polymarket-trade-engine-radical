@@ -38,6 +38,10 @@ export interface FairValueMakerConfig {
   maxMakerBidPrice?: number;
   /** Suppress repeated identical exposure-limit rejections for this long. */
   exposureBlockCooldownMs?: number;
+  /** Minimum time an order must live before it can be replaced (ms). Default: 500. */
+  minOrderLifeMs?: number;
+  /** Minimum price change required to trigger a quote replacement. Default: 0.02. */
+  priceHysteresis?: number;
 
   // ── v1.3.0 Profit-Selective Controls ────────────────────────────────────────
   /**
@@ -94,6 +98,8 @@ const DEFAULT_CONFIG: Required<FairValueMakerConfig> = {
   highVolExtraMargin: 0.02,
   maxMakerBidPrice: 0.89,
   exposureBlockCooldownMs: 10_000,
+  minOrderLifeMs: 500,
+  priceHysteresis: 0.02,
   // v1.3.0 defaults — all disabled so legacy variants are unaffected
   edgeWeightedSizing: false,
   regimeWeightedSizing: false,
@@ -134,13 +140,71 @@ export const fairValueMaker: Strategy = async (ctx) => {
   let sideBlockedUp = false;
   let sideBlockedDown = false;
 
-  const evaluateQuotes = () => {
+  let rebatesCollected = 0;
+  let lastRebateFetchMs = 0;
+  let lastWalletSyncMs = 0;
+  let lastAnchorPrice: number | null = null;
+  let lastAnchorUpdateMs = 0;
+
+  // ── MOL (Minimum Order Life) State ───────────────────────────────────────────
+  let lastUpdateUpMs = 0;
+  let lastUpdateDownMs = 0;
+
+  const evaluateQuotes = async () => {
     if (isDone) return;
+    
+    const now = ctx.clock.nowMs();
+
+    // 0. Periodic Wallet & Rebate Sync
+    // Synchronize local state with exchange truth every 5 minutes
+    if (now - lastWalletSyncMs > 5 * 60 * 1000) {
+      lastWalletSyncMs = now;
+      lastRebateFetchMs = now;
+      try {
+        // Parallel sync of USDC, Shares, and Rebates
+        await Promise.all([
+          (ctx as any).client?.updateUSDCBalance?.() ?? Promise.resolve(),
+          ...ctx.clobTokenIds.map(id => (ctx as any).client?.updateAvailableShares?.(id) ?? Promise.resolve()),
+          (async () => {
+            const activity = await (ctx as any).client?.getActivity("MAKER_REBATE");
+            if (activity && Array.isArray(activity)) {
+              let total = 0;
+              for (const item of activity) {
+                if (item.type === "MAKER_REBATE") total += parseFloat(item.amount);
+              }
+              rebatesCollected = total;
+            }
+          })()
+        ]);
+        ctx.log(`[wallet] Full sync complete. USDC=$${ctx.walletBalanceUsd.toFixed(2)}`, "dim");
+      } catch (err: any) {
+        ctx.log(`[wallet] Sync failed: ${err.message}`, "red");
+      }
+    }
+
     const quant = ctx.quant?.latest();
     const sigma = quant?.sigma;
     const quoteRegime = quant as ({ jumpDetected?: boolean; volatilityRegime?: string } & typeof quant);
     const aggregate = ctx.predictive?.aggregate?.latest() ?? null;
     
+    // Polymarket research: Continuous Anchor Monitoring
+    const ticker = (ctx as any).ticker;
+    if (ticker?.isPolymarketStale) {
+      if (ctx.clock.nowMs() % 10000 === 0) {
+        ctx.log(`[fair-value] PAUSING: Anchor feed (RTDS) is stale.`, "red");
+      }
+      ctx.cancelOrders(ctx.pendingOrders.map(o => o.orderId));
+      return;
+    }
+
+    const anchorPrice = ticker?.price; // Ticker prioritizes polymarket RTDS
+    if (anchorPrice !== null && anchorPrice !== lastAnchorPrice) {
+      lastAnchorPrice = anchorPrice;
+      lastAnchorUpdateMs = ctx.clock.nowMs();
+      // If Anchor moves, we could potentially force an immediate re-evaluation 
+      // but evaluateQuotes is already called on every tick.
+    }
+
     const remainingSecs = (ctx.slotEndMs - ctx.clock.nowMs()) / 1000;
     
     if (remainingSecs <= 0) {
@@ -163,14 +227,18 @@ export const fairValueMaker: Strategy = async (ctx) => {
     
     if (probUp === null || probUp === undefined || sigma === null || sigma === undefined) {
       ctx.cancelOrders(ctx.pendingOrders.map(o => o.orderId));
-      if (fairValue.noTradeReason && ctx.clock.nowMs() % 5000 === 0) {
+      const remFloorSecs = Math.floor(remainingSecs);
+      if (fairValue.noTradeReason && remFloorSecs % 5 === 0 && remFloorSecs !== lastLogSec) {
         ctx.log(`[fair-value] No quote: ${fairValue.noTradeReason}`, "dim");
+        lastLogSec = remFloorSecs;
       }
       return;
     }
     const remFloor = Math.floor(remainingSecs);
     if (remFloor % 30 === 0 && remFloor !== lastLogSec) {
-      ctx.log(`[fair-value] P(UP)=${probUp.toFixed(4)} Sigma=${sigma.toFixed(4)} settlement=${fairValue.settlementAnchorPrice?.toFixed(2) ?? "n/a"} predictive=${fairValue.predictiveCompositePrice?.toFixed(2) ?? "n/a"} Rem=${remFloor}s`, "dim");
+      const pnlDisplay = (ctx as any).pnl !== undefined ? ` PnL=$${(ctx as any).pnl.toFixed(2)}` : "";
+      const rebateDisplay = rebatesCollected > 0 ? ` (Rebates: $${rebatesCollected.toFixed(4)})` : "";
+      ctx.log(`[fair-value] P(UP)=${probUp.toFixed(4)} Sigma=${sigma.toFixed(4)} settlement=${fairValue.settlementAnchorPrice?.toFixed(2) ?? "n/a"} predictive=${fairValue.predictiveCompositePrice?.toFixed(2) ?? "n/a"} Rem=${remFloor}s${pnlDisplay}${rebateDisplay}`, "dim");
       lastLogSec = remFloor;
     }
     if (remainingSecs < 10) {
@@ -340,17 +408,18 @@ export const fairValueMaker: Strategy = async (ctx) => {
 
     const ordersToPost: OrderRequest[] = [];
 
-    const TOLERANCE = 0.01;
     const EPSILON = 0.0001;
 
     // ── Active Exit Logic (SELLS) ──────────────────────────────────────────────
     let existingSellUp = ctx.pendingOrders.find(o => o.tokenId === upTokenId && o.action === "sell");
     if (askPriceUp !== null && askPriceUp < 1.0) {
-      if (existingSellUp && Math.abs(existingSellUp.price - askPriceUp) > (TOLERANCE + EPSILON)) {
+      const molExpired = (now - lastUpdateUpMs) >= config.minOrderLifeMs;
+      if (existingSellUp && Math.abs(existingSellUp.price - askPriceUp) > (config.priceHysteresis + EPSILON) && molExpired) {
         ctx.log(`[fair-value] Canceling existing UP sell quote: ${existingSellUp.price} -> new target ${askPriceUp}`, "dim");
         ctx.cancelOrders([existingSellUp.orderId]);
       } else if (!existingSellUp && sellableUp >= config.minShares && !inFlightSellUp) {
         inFlightSellUp = true;
+        lastUpdateUpMs = now;
         ordersToPost.push({
           req: {
             tokenId: upTokenId,
@@ -375,11 +444,13 @@ export const fairValueMaker: Strategy = async (ctx) => {
 
     let existingSellDown = ctx.pendingOrders.find(o => o.tokenId === downTokenId && o.action === "sell");
     if (askPriceDown !== null && askPriceDown < 1.0) {
-      if (existingSellDown && Math.abs(existingSellDown.price - askPriceDown) > (TOLERANCE + EPSILON)) {
+      const molExpired = (now - lastUpdateDownMs) >= config.minOrderLifeMs;
+      if (existingSellDown && Math.abs(existingSellDown.price - askPriceDown) > (config.priceHysteresis + EPSILON) && molExpired) {
         ctx.log(`[fair-value] Canceling existing DOWN sell quote: ${existingSellDown.price} -> new target ${askPriceDown}`, "dim");
         ctx.cancelOrders([existingSellDown.orderId]);
       } else if (!existingSellDown && sellableDown >= config.minShares && !inFlightSellDown) {
         inFlightSellDown = true;
+        lastUpdateDownMs = now;
         ordersToPost.push({
           req: {
             tokenId: downTokenId,
@@ -417,13 +488,17 @@ export const fairValueMaker: Strategy = async (ctx) => {
     let cashBudget = Number.isFinite(balance) ? Math.max(0, balance) : 0;
 
     const reserveAffordableShares = (side: "UP" | "DOWN", price: number, requestedShares: number): number => {
+      // Polymarket research: Professional bots must respect token-aware pricing.
+      // If price is 0.95, cost of 10 shares is $9.50. We must check actual USDC available.
       const maxSharesByExposure = Number.isFinite(remainingExposure)
         ? Math.floor(remainingExposure / price)
         : requestedShares;
       const maxSharesByCash = Math.floor(cashBudget / price);
+      
       const minShares = Math.max(1, config.minShares);
       const targetShares = Math.max(requestedShares, minShares);
       const shares = Math.min(targetShares, maxSharesByExposure, maxSharesByCash);
+      
       if (shares < minShares) {
         const reason = maxSharesByExposure < minShares ? "insufficient exposure budget" : "insufficient cash";
         const available = maxSharesByExposure < minShares ? remainingExposure : cashBudget;
@@ -432,7 +507,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
       }
       if (shares < targetShares) {
         const reason = shares === maxSharesByCash ? "cash balance" : "remaining exposure budget";
-        ctx.log(`[fair-value] Clamping ${side} shares to ${shares.toFixed(2)} due to ${reason}`, "yellow");
+        ctx.log(`[fair-value] Clamping ${side} shares to ${shares.toFixed(2)} due to ${reason} (Price=${price.toFixed(2)})`, "yellow");
       }
       cashBudget -= price * shares;
       return shares;
@@ -503,12 +578,13 @@ export const fairValueMaker: Strategy = async (ctx) => {
 
     if (bidPriceUp !== null && bidPriceUp > 0.01 && bidPriceUp < 0.99 && evUp.edge >= config.minEdge && allowUpFlow) {
       // v1.3.0 — Falling-Knife Block: suppress new UP buys if we've detected consecutive adverse fills
+      const molExpired = (now - lastUpdateUpMs) >= config.minOrderLifeMs;
       if (config.fallingKnifeBlock && sideBlockedUp) {
         if (ctx.clock.nowMs() % 10000 === 0) {
           ctx.log(`[fair-value] v1.3.0 falling-knife block: UP side blocked (${consecutiveAdverseUp} consecutive adverse fills)`, "yellow");
         }
         if (existingUp) ctx.cancelOrders([existingUp.orderId]);
-      } else if (!existingUp || Math.abs(existingUp.price - bidPriceUp) > (TOLERANCE + EPSILON)) {
+      } else if (!existingUp || (Math.abs(existingUp.price - bidPriceUp) > (config.priceHysteresis + EPSILON) && molExpired)) {
         if (existingUp) {
           ctx.log(`[fair-value] Replacing UP quote: ${existingUp.price} -> ${bidPriceUp} (P=${probUp.toFixed(3)})`, "dim");
           ctx.cancelOrders([existingUp.orderId]);
@@ -520,6 +596,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
           const exposureKey = exposureBlockKey(ctx, "UP", bidPriceUp, sharesToBuy);
           if (!isExposureBlocked(ctx, exposureBlockCooldowns, exposureKey, "UP", bidPriceUp, sharesToBuy)) {
             inFlightUp = true;
+            lastUpdateUpMs = now;
             const capturedFillPriceUp = bidPriceUp;
             ordersToPost.push({
               req: {
@@ -562,12 +639,13 @@ export const fairValueMaker: Strategy = async (ctx) => {
 
     if (bidPriceDown !== null && bidPriceDown > 0.01 && bidPriceDown < 0.99 && evDown.edge >= config.minEdge && allowDownFlow) {
       // v1.3.0 — Falling-Knife Block: suppress new DOWN buys if we've detected consecutive adverse fills
+      const molExpired = (now - lastUpdateDownMs) >= config.minOrderLifeMs;
       if (config.fallingKnifeBlock && sideBlockedDown) {
         if (ctx.clock.nowMs() % 10000 === 0) {
           ctx.log(`[fair-value] v1.3.0 falling-knife block: DOWN side blocked (${consecutiveAdverseDown} consecutive adverse fills)`, "yellow");
         }
         if (existingDown) ctx.cancelOrders([existingDown.orderId]);
-      } else if (!existingDown || Math.abs(existingDown.price - bidPriceDown) > (TOLERANCE + EPSILON)) {
+      } else if (!existingDown || (Math.abs(existingDown.price - bidPriceDown) > (config.priceHysteresis + EPSILON) && molExpired)) {
         if (existingDown) {
           ctx.log(`[fair-value] Replacing DOWN quote: ${existingDown.price} -> ${bidPriceDown}`, "dim");
           ctx.cancelOrders([existingDown.orderId]);
@@ -579,6 +657,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
           const exposureKey = exposureBlockKey(ctx, "DOWN", bidPriceDown, sharesToBuy);
           if (!isExposureBlocked(ctx, exposureBlockCooldowns, exposureKey, "DOWN", bidPriceDown, sharesToBuy)) {
             inFlightDown = true;
+            lastUpdateDownMs = now;
             const capturedFillPriceDown = bidPriceDown;
             ordersToPost.push({
               req: {
@@ -637,6 +716,13 @@ export const fairValueMaker: Strategy = async (ctx) => {
   }
   if (ctx.orderFlow) {
     unsubs.push(ctx.orderFlow.subscribe(() => evaluateQuotes()));
+  }
+  // Polymarket research: Hook into ticker for instant "Anchor" reaction
+  const ticker = (ctx as any).ticker;
+  if (ticker && typeof ticker.on === "function") {
+    const onUpdate = () => evaluateQuotes();
+    ticker.on("update", onUpdate);
+    unsubs.push(() => ticker.off("update", onUpdate));
   }
 
   // Fallback heartbeat timer for time-decay (Theta) and safety nets
@@ -821,7 +907,7 @@ function logSuppressedAffordability(
   const now = ctx.clock.nowMs();
   const nextLogMs = cooldowns.get(key) ?? Number.NEGATIVE_INFINITY;
   if (now < nextLogMs) return;
-  cooldowns.set(key, now + 10_000);
+  cooldowns.set(key, now + 30_000);
   ctx.log(
     `[fair-value] Suppressing ${side} quote: ${reason} price=${price.toFixed(2)} shares=${shares} available=$${available.toFixed(4)}`,
     "dim",
