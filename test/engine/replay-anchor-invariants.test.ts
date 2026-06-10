@@ -48,4 +48,44 @@ describe("Replay Anchor Invariance Invariants", () => {
     const anchor3 = await adapter.priceToBeat(round);
     expect(anchor3?.price).toBe(60000);
   });
+
+  test("ReplayResolutionAdapter does NOT synthesize an open anchor from a live/ticker latest event", async () => {
+    const reader: any = { 
+        subscribe: (h: any) => { reader._h = h; return () => {}; },
+        round: { slug: "btc-updown-5m-100" }
+    };
+    const adapter = new ReplayResolutionAdapter(reader);
+    const round = { slug: "btc-updown-5m-100" } as any;
+
+    reader._h({
+        ts: 1000,
+        type: "ticker",
+        assetPrice: 65000
+    });
+
+    expect(adapter.latest()?.price).toBe(65000);
+    const anchor = await adapter.priceToBeat(round);
+    expect(anchor).toBeNull();
+  });
+
+  test("ReplayResolutionAdapter latches an anchor only from explicit market_price/open truth", async () => {
+    const reader: any = { 
+        subscribe: (h: any) => { reader._h = h; return () => {}; },
+        round: { slug: "btc-updown-5m-100" }
+    };
+    const adapter = new ReplayResolutionAdapter(reader);
+    const round = { slug: "btc-updown-5m-100" } as any;
+
+    reader._h({
+        ts: 1000,
+        type: "market_price",
+        openPrice: 60000,
+        priceToBeat: 60000
+    });
+
+    const anchor = await adapter.priceToBeat(round);
+    expect(anchor).not.toBeNull();
+    expect(anchor?.kind).toBe("open");
+    expect(anchor?.price).toBe(60000);
+  });
 });

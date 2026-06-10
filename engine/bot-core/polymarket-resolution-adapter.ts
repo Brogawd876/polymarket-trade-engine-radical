@@ -55,6 +55,9 @@ export class PolymarketResolutionAdapter implements ResolutionSourceAdapter {
       const timeoutId = setTimeout(() => {
         if (!isResolved) {
           isResolved = true;
+          if (this.ws) {
+            try { this.ws.destroy(); } catch(e) {}
+          }
           reject(new Error("PolymarketResolutionAdapter WebSocket connection timed out after 10000ms"));
         }
       }, 10000);
