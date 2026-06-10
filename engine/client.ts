@@ -812,8 +812,3 @@ export class PolymarketEarlyBirdClient implements EarlyBirdClient {
     }
   }
 }
-       console.info = origInfo;
-      }
-    }
-  }
-}

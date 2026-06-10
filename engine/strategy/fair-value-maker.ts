@@ -127,18 +127,10 @@ export const fairValueMaker: Strategy = async (ctx) => {
   let isDone = false;
   let lastLogSec = -1;
 
-  type OrderMachineState = {
-    status: "idle" | "placing" | "live" | "canceling";
-    orderId?: string;
-    lastUpdateMs: number;
-  };
-
-  const orderState = {
-    "UP:buy": { status: "idle", lastUpdateMs: 0 } as OrderMachineState,
-    "DOWN:buy": { status: "idle", lastUpdateMs: 0 } as OrderMachineState,
-    "UP:sell": { status: "idle", lastUpdateMs: 0 } as OrderMachineState,
-    "DOWN:sell": { status: "idle", lastUpdateMs: 0 } as OrderMachineState,
-  };
+  let inFlightUp = false;
+  let inFlightDown = false;
+  let inFlightSellUp = false;
+  let inFlightSellDown = false;
 
   // ── v1.3.0 Profit-Selective State ────────────────────────────────────────────
   // Falling-knife tracking: count consecutive fills where mid-price at fill time

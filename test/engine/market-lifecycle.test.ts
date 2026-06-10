@@ -603,8 +603,8 @@ describe("Test 11: lifecycle-initiated cancel does not call onFailed", () => {
   test(
     "order cancelled via expiry does not trigger onFailed",
     async () => {
-      // Advance past the 2s expiry. _cancelOrders untracks the order from the
-      // channel before calling the API, so no CANCELLATION callback fires.
+      // Advance past the 2s expiry. _cancelOrders will actively cancel the order.
+      // The async CANCELLATION callback is suppressed, so onFailed is not called.
       await runner.advanceTo(LOG_START_TS + 5000);
 
       expect(failedCalled).toBe(false);

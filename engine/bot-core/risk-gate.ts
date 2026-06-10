@@ -75,7 +75,7 @@ export const DEFAULT_SIMULATION_RISK_LIMITS: StaticRiskLimits = {
   allowProduction: false,
   maxOrderNotionalUsd: 500,
   maxSharesPerOrder: 2000,
-  maxOpenExposureUsd: 1000,
+  maxOpenExposureUsd: 50,
   maxSessionLossUsd: 50,
   maxFeedFreshnessMs: 1000,
   maxOracleLagMs: 60_000,

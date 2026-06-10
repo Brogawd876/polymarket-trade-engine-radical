@@ -6,9 +6,9 @@
 **Decision:** Orders will not be replaced for minor price movements. A Minimum Order Life (500ms) and Price Hysteresis (0.02) are enforced.
 **Rationale:** The bot was churning orders multiple times per second, risking rate limits and high cancellation fees.
 
-### 2. State Machine for Active Orders
-**Decision:** Replace loose booleans (`inFlightUp`, etc.) with a synced `OrderMachineState` map (`UP:buy`, `DOWN:sell`, etc.).
-**Rationale:** Orders were getting permanently stuck because the booleans were not reliably reset in all `onFilled` and `onFailed` edge cases, particularly partial fills and full fills that bypassed `onFailed`.
+### 2. State Machine (Postponed)
+**Decision:** Revert the `OrderMachineState` refactor and restore legacy `inFlight` booleans.
+**Rationale:** The refactor was partially implemented and causing instability. To maintain a clean merge path for other critical fixes, the state machine work is postponed to a dedicated task.
 
 ### 3. Cancel Lifecycle Untracking
 **Decision:** `MarketLifecycle` will only untrack an order from the user channel AFTER the exchange API confirms it is canceled.

@@ -18,6 +18,7 @@ import type { MaintenanceTracker } from "../utils/maintenance.ts";
 import type { UserChannel } from "./user-channel.ts";
 import {
   type ResolutionSourceAdapter,
+  type ResolutionPriceEvent,
   type VenueDataAdapter,
   type PredictiveFeedAdapter,
   type PredictiveSignalAggregator,
@@ -1393,6 +1394,11 @@ export class MarketLifecycle {
               this._commitFill(pending, net, fee);
             },
             onFailed: (reason) => {
+              // Suppress async channel "cancelled" events for orders we are actively cancelling.
+              // `_cancelOrders` handles untracking, unlocking, and callbacks.
+              if (this._cancelingOrderIds.has(orderId) && reason.toLowerCase() === "cancelled") {
+                return;
+              }
               const pending = this._pendingOrders.find(
                 (o) => o.orderId === orderId,
               );

@@ -174,7 +174,7 @@ describe("Strategy Logic Verification", () => {
     await fairValueMaker(ctx as StrategyContext);
     clock.setNowMs(1000);
 
-    const upOrder = postedOrders.find(o => o.req.tokenId === "up-id");
+    const upOrder = postedOrders.find(o => o.req.tokenId === "up-id" && o.req.action === "buy");
     expect(upOrder.req.price).toBeGreaterThan(0.45);
     expect(upOrder.req.price).toBeLessThan(0.48);
     
@@ -667,8 +667,8 @@ describe("Strategy Logic Verification", () => {
     const cleanup = await fairValueMaker(ctx as StrategyContext);
     clock.setNowMs(1000);
 
-    const upOrder = postedOrders.find(o => o.req.tokenId === "up-id");
-    const downOrder = postedOrders.find(o => o.req.tokenId === "down-id");
+    const upOrder = postedOrders.find(o => o.req.tokenId === "up-id" && o.req.action === "buy");
+    const downOrder = postedOrders.find(o => o.req.tokenId === "down-id" && o.req.action === "buy");
     expect(upOrder.req.price).toBeGreaterThan(0.50);
     expect(downOrder.req.price).toBeLessThan(0.48);
     if (cleanup) cleanup();
