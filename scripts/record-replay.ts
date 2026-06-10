@@ -77,47 +77,37 @@ async function main() {
   const coinbase = new CoinbasePredictiveAdapter(clock, telemetrySink);
 
   const handleResolutionEvent = (event: any) => {
-    if (event.kind === "open" || event.kind === "live") {
+    if (event.kind === "open") {
       writeReplayEvent(outPath, {
         ts: clock.nowMs(),
         type: "market_price",
+        slug,
+        kind: "open",
         openPrice: event.price,
-      });
-      // Also emit chainlink_resolution for general compatibility
-      writeReplayEvent(outPath, {
-        ts: clock.nowMs(),
-        type: "chainlink_resolution",
-        price: event.price,
-        rawOracleAnswer: event.rawOracleAnswer,
         roundId: event.roundId,
-        answeredInRound: event.answeredInRound,
         chainUpdatedAtMs: event.chainUpdatedAtMs,
         localReceivedAtMs: event.localReceivedAtMs,
-        oracleLagMs: event.oracleLagMs,
-        quality: event.quality,
-        stalenessStatus: event.stalenessStatus,
-        source: event.source,
-        sourceType: event.sourceType,
-        contractAddress: event.metadata?.contractAddress,
-      });
-    } else if (event.kind === "close") {
-      writeReplayEvent(outPath, {
-        ts: clock.nowMs(),
-        type: "chainlink_resolution",
-        price: event.price,
-        rawOracleAnswer: event.rawOracleAnswer,
-        roundId: event.roundId,
-        answeredInRound: event.answeredInRound,
-        chainUpdatedAtMs: event.chainUpdatedAtMs,
-        localReceivedAtMs: event.localReceivedAtMs,
-        oracleLagMs: event.oracleLagMs,
-        quality: event.quality,
-        stalenessStatus: event.stalenessStatus,
-        source: event.source,
-        sourceType: event.sourceType,
-        contractAddress: event.metadata?.contractAddress,
       });
     }
+
+    // Always emit chainlink_resolution for general compatibility
+    writeReplayEvent(outPath, {
+      ts: clock.nowMs(),
+      type: "chainlink_resolution",
+      kind: event.kind,
+      price: event.price,
+      rawOracleAnswer: event.rawOracleAnswer,
+      roundId: event.roundId,
+      answeredInRound: event.answeredInRound,
+      chainUpdatedAtMs: event.chainUpdatedAtMs,
+      localReceivedAtMs: event.localReceivedAtMs,
+      oracleLagMs: event.oracleLagMs,
+      quality: event.quality,
+      stalenessStatus: event.stalenessStatus,
+      source: event.source,
+      sourceType: event.sourceType,
+      contractAddress: event.metadata?.contractAddress,
+    });
   };
 
   try {

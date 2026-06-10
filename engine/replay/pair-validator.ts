@@ -67,13 +67,14 @@ export async function validatePair(
           if (event.slug) replaySlugFound = event.slug;
           if (event.type === "slot" && event.action === "start") slotEndTime = event.endTime;
 
-          if (event.type === "market_price") {
+          if (event.type === "market_price" && event.kind === "open" && typeof event.openPrice === "number") {
             chainlinkOpenAnchorSeen = true;
           }
-          // The close truth is a chainlink_resolution that arrives near or after the end of the market,
-          // or explicitly has a close kind if provided.
           if (event.type === "chainlink_resolution") {
-            if (event.kind === "close" || (slotEndTime && ts >= slotEndTime)) {
+            const chainTs = event.chainUpdatedAtMs ?? event.sourceTimestamp;
+            if (event.kind === "close") {
+              chainlinkCloseTruthSeen = true;
+            } else if (slotEndTime && chainTs >= slotEndTime && (event.quality === "resolved" || event.quality === "settled" || event.status === "closed")) {
               chainlinkCloseTruthSeen = true;
             }
           }

@@ -55,7 +55,7 @@ describe("Pair Validator", () => {
   test("malformed raw L2 NDJSON fails", async () => {
     const replayLog = path.join(tmpDir, "malformed-ok2.log");
     const l2Log = path.join(tmpDir, "malformed2.ndjson");
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 1000 }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 1000 }) + "\n");
     fs.writeFileSync(l2Log, "not json either\n");
 
     const manifest = await validatePair("btc-updown-5m-100", replayLog, l2Log, "late-entry");
@@ -69,7 +69,7 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "slugmismatch.log");
     const l2Log = path.join(tmpDir, "slugmismatch.ndjson");
     
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 1000, slug: "wrong-slug" }) + "\n" + JSON.stringify({ ts: 5000, slug: "wrong-slug" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 1000, slug: "wrong-slug" }) + "\n" + JSON.stringify({ ts: 5000, slug: "wrong-slug" }) + "\n");
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 500, slug: "wrong-slug-2" }) + "\n" + JSON.stringify({ eventType: "market_trade", receivedTsMs: 6000 }) + "\n");
 
     const manifest = await validatePair("btc-updown-5m-100", replayLog, l2Log, "late-entry");
@@ -83,7 +83,7 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "zerouseful.log");
     const l2Log = path.join(tmpDir, "zerouseful.ndjson");
     
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 5000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 5000, slug: "btc-updown-5m-100" }) + "\n");
     // Only raw_market_message
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "raw_market_message", receivedTsMs: 500, slug: "btc-updown-5m-100" }) + "\n");
 
@@ -97,7 +97,7 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "partial.log");
     const l2Log = path.join(tmpDir, "partial.ndjson");
     
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 5000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 5000, slug: "btc-updown-5m-100" }) + "\n");
     // L2 starts late and ends early
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_trade", receivedTsMs: 4000, slug: "btc-updown-5m-100" }) + "\n");
 
@@ -114,7 +114,7 @@ describe("Pair Validator", () => {
     const l2Log = path.join(tmpDir, "complete.ndjson");
     
     // Out of order: 4000 then 2000
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n");
     // Out of order: 5000 then 1000
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_trade", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n");
 
@@ -133,7 +133,7 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "complete2.log");
     const l2Log = path.join(tmpDir, "complete2.ndjson");
     
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_trade", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n");
 
     const manifest = await validatePair("btc-updown-5m-100", replayLog, l2Log, "late-entry", {
@@ -150,7 +150,7 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "complete_insufficient.log");
     const l2Log = path.join(tmpDir, "complete_insufficient.ndjson");
     
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_trade", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n");
 
     const manifest = await validatePair("btc-updown-5m-100", replayLog, l2Log, "late-entry", {
@@ -167,7 +167,7 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "complete3.log");
     const l2Log = path.join(tmpDir, "complete3.ndjson");
     
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_trade", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n");
 
     const manifest = await validatePair("btc-updown-5m-100", replayLog, l2Log, "late-entry", {
@@ -184,7 +184,7 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "complete4.log");
     const l2Log = path.join(tmpDir, "complete4.ndjson");
     
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_trade", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n");
 
     const manifest = await validatePair("btc-updown-5m-100", replayLog, l2Log, "late-entry", {
@@ -205,7 +205,7 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "bookonly.log");
     const l2Log = path.join(tmpDir, "bookonly.ndjson");
 
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     // Only book events, no trade events
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_book_delta", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n");
 
@@ -228,7 +228,7 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "unknownstop.log");
     const l2Log = path.join(tmpDir, "unknownstop.ndjson");
 
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_trade", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n");
 
     // No recorderExitCode, no signal = unknown stop reason from metadata
@@ -248,7 +248,7 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "sigintnoc.log");
     const l2Log = path.join(tmpDir, "sigintnoc.ndjson");
 
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     // No recorder_completed event in L2 file
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_trade", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n");
 
@@ -264,7 +264,7 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "sigintwithcomplete.log");
     const l2Log = path.join(tmpDir, "sigintwithcomplete.ndjson");
 
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     // recorder_completed event IS present
     fs.writeFileSync(l2Log,
       JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n" +
@@ -288,8 +288,8 @@ describe("Pair Validator", () => {
     const replayLog = path.join(tmpDir, "missing-open.log");
     const l2Log = path.join(tmpDir, "missing-open.ndjson");
     
-    // Only close anchor present
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    // Only close anchor present, and a fake live "open anchor" that shouldn't work
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "live", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_trade", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n");
 
     const manifest = await validatePair("btc-updown-5m-100", replayLog, l2Log, "late-entry", {
@@ -305,7 +305,7 @@ describe("Pair Validator", () => {
     const l2Log = path.join(tmpDir, "missing-close.ndjson");
     
     // Only open anchor present
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_trade", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n");
 
     const manifest = await validatePair("btc-updown-5m-100", replayLog, l2Log, "late-entry", {
@@ -321,7 +321,7 @@ describe("Pair Validator", () => {
     const l2Log = path.join(tmpDir, "minimal-synthetic.ndjson");
     
     // Both anchors present, timestamps inside L2 bounds (1000 to 5000)
-    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000, ts: 1500 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000, ts: 4500 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", kind: "open", openPrice: 60000, ts: 1500 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000, ts: 4500 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     fs.writeFileSync(l2Log, JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ eventType: "market_trade", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n");
 
     const manifest = await validatePair("btc-updown-5m-100", replayLog, l2Log, "late-entry", {
