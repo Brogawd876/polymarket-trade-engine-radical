@@ -1016,86 +1016,20 @@ describe("Strategy Logic Verification", () => {
     if (cleanup) cleanup();
   });
 
-  test("UP sell MOL does not block UP buy replacement", async () => {
+  test("Test 1: SELL timer changes do not reset or block BUY replacement", async () => {
     const clock = new VirtualClock();
     clock.setNowMs(1000);
     const postedOrders: any[] = [];
-    let evalCb: any;
     const canceledOrders: string[] = [];
-    let currentEv: any = null;
+    let evalCb: () => void = () => {};
 
     const ctx: Partial<StrategyContext> = {
       clock,
-      ...settlementContext(clock, { settlement: 100_000, predictive: 100_000 }), // P(UP) = 0.50
-      slotEndMs: clock.nowMs() + 300_000,
-      clobTokenIds: ["up-id", "down-id"],
-      orderHistory: [
-        { tokenId: "up-id", action: "buy", shares: 10, price: 0.50 } // We have inventory
-      ],
-      pendingOrders: [
-        { orderId: "buy-up-1", tokenId: "up-id", action: "buy", shares: 10, price: 0.45 },
-        { orderId: "sell-up-1", tokenId: "up-id", action: "sell", shares: 10, price: 0.55 }
-      ],
-      walletBalanceUsd: 100,
-      maxOpenExposureUsd: 100,
-      openExposureUsd: 0,
-      strategyConfig: {
-        shares: 10,
-        margin: 0.01,
-        minOrderLifeMs: 500,
-        priceHysteresis: 0.02,
-        activeExit: true,
-        minExitEdge: 0.005,
-      },
-      orderBook: makerBook(0.60, 0.60),
-      quant: { latest: () => ({ sigma: 0.5 }), subscribe: () => () => {} },
-      postOrders: (reqs) => { postedOrders.push(...reqs); return []; },
-      cancelOrders: (ids) => { canceledOrders.push(...ids); },
-      log: () => {},
-    } as any;
-
-    const cleanup = await fairValueMaker(ctx as any);
-
-    // Initial evaluation should not cancel the buy if it's correct, but let's change the predictive price
-    // to force a buy replacement. We also need to simulate a recent SELL update.
-    
-    // First, let's fast forward time a bit.
-    clock.setNowMs(1200);
-    
-    // Now simulate a state where the SELL order was just updated, but the BUY order is old.
-    // The FVM strategy state is encapsulated, so we'll trigger an update that ONLY affects the sell order,
-    // setting the sell MOL timer to 1200.
-    
-    // Move predictive price slightly to change sell target but not buy target enough to replace.
-    // P(UP) moves from 0.50 -> 0.60
-    currentEv = settlementContext(clock, { settlement: 100_000, predictive: 100_080 }); // rough 0.60
-    Object.assign(ctx, currentEv);
-    
-    // Let the evaluateQuotes tick run
-    clock.setNowMs(1201); // Within MOL (500ms) from 1000, so buy (0.45->0.59) would replace IF not blocked.
-    // Wait, if we advance to 1600, both are expired. Let's do this:
-    // T=1000: Strategy starts. Both BUY and SELL timers are set to 1000.
-    // T=1100: Predictive price moves up slightly (P=0.55). BUY wants to move 0.45->0.54 (diff 0.09 > 0.02).
-    // BUT MOL is 500ms, so it's blocked.
-    // Instead, let's just observe the decoupled behavior.
-    
-  });
-
-  test("Decoupled MOL timers: SELL update does not block BUY replacement", async () => {
-    const clock = new VirtualClock();
-    clock.setNowMs(1000);
-    const postedOrders: any[] = [];
-    let evalCb: any;
-    let canceledOrders: string[] = [];
-
-    // T=1000: P(UP) ~ 0.50
-    const ctx: Partial<StrategyContext> = {
-      clock,
-      ...settlementContext(clock, { settlement: 100_000, predictive: 100_000 }),
+      ...settlementContext(clock, { settlement: 100_000, predictive: 100_000 }), // P(UP)=0.50
       slotEndMs: clock.nowMs() + 86400_000, // 1 day
       clobTokenIds: ["up-id", "down-id"],
       orderHistory: [
-        { tokenId: "up-id", action: "buy", shares: 10, price: 0.50 }
+        { tokenId: "up-id", action: "buy", shares: 10, price: 0.50 } // Have inventory to enable SELL
       ],
       pendingOrders: [],
       walletBalanceUsd: 100,
@@ -1104,87 +1038,159 @@ describe("Strategy Logic Verification", () => {
       strategyConfig: {
         shares: 10,
         margin: 0.01,
-        inventorySkew: 0,
         minOrderLifeMs: 500,
         priceHysteresis: 0.02,
         activeExit: true,
         minExitEdge: 0.005,
       },
-      orderBook: makerBook(0.99, 0.99), // prevent maker Quoting blocks
+      orderBook: makerBook(0.99, 0.99), // ask=0.99, bid=0.30
       quant: { latest: () => ({ sigma: 0.5 }), subscribe: (cb: any) => { evalCb = cb; return () => {}; } },
       postOrders: (reqs) => { postedOrders.push(...reqs); return []; },
       cancelOrders: (ids) => { canceledOrders.push(...ids); },
       log: () => {},
     } as any;
 
-    const cleanup = await fairValueMaker(ctx as StrategyContext);
-    
-    // T=1000: Strategy posts initial BUY and SELL.
-    // Timers: lastUpdateBuyUpMs = 1000, lastUpdateSellUpMs = 1000
-    postedOrders.length = 0;
-    ctx.pendingOrders = [];
-    if (evalCb) evalCb();
-    expect(postedOrders.filter(o => o.req.action === "buy" && o.req.tokenId === "up-id")).toHaveLength(1); // UP and DOWN
-    expect(postedOrders.filter(o => o.req.action === "sell")).toHaveLength(1); // Only UP sell because we only have UP inventory
-    
-    // Simulate orders becoming pending
-    ctx.pendingOrders = [
-      { orderId: "buy-1", tokenId: "up-id", action: "buy", shares: 10, price: postedOrders.find(o => o.req.action === "buy").req.price },
-      { orderId: "sell-1", tokenId: "up-id", action: "sell", shares: 10, price: postedOrders.find(o => o.req.action === "sell").req.price },
-    ];
-    postedOrders.length = 0;
-    
-    // T=1600: Both MOLs expired (1600 - 1000 = 600 > 500).
-    clock.setNowMs(1600);
-    
-    // Change price so ONLY SELL needs updating (move > 0.02). BUY stays same.
-    // Wait, to only update SELL, we change avgEntryPrice? No, active exit prices off avgEntry OR adjustedProb.
-    // Let's change the predictive price slightly so SELL wants to move but BUY doesn't.
-    // Or we just change predictive price enough so BOTH want to move, but we only have time to process one?
-    // Let's just do a big jump so BOTH want to move, but we assert they both move.
-    Object.assign(ctx, settlementContext(clock, { settlement: 100_000, predictive: 101_000 })); // P(UP) ~ 0.65
-    ctx.slotEndMs = clock.nowMs() + 86400_000;
-    
-    // Manually trigger eval via captured callback
-    clock.setNowMs(2000);
-    if (evalCb) evalCb();
-    
-    // Both should be canceled and replaced because MOL is expired for both.
-    expect(canceledOrders).toContain("buy-1");
-    expect(canceledOrders).toContain("sell-1");
-    postedOrders.length = 0;
-    ctx.pendingOrders = [];
-    if (evalCb) evalCb();
+    const cleanup = await fairValueMaker(ctx as any);
+
+    // 1. T=1000: Strategy posts initial BUY and SELL.
+    // lastUpdateBuyUpMs = 1000, lastUpdateSellUpMs = 1000
     expect(postedOrders.filter(o => o.req.action === "buy" && o.req.tokenId === "up-id")).toHaveLength(1);
-    expect(postedOrders.filter(o => o.req.action === "sell")).toHaveLength(1);
-    
-    // Now pending orders are the new ones.
+    expect(postedOrders.filter(o => o.req.action === "sell" && o.req.tokenId === "up-id")).toHaveLength(1);
+
+    // Put them in pending
+    const buyOrder1 = postedOrders.find(o => o.req.action === "buy" && o.req.tokenId === "up-id");
+    const sellOrder1 = postedOrders.find(o => o.req.action === "sell" && o.req.tokenId === "up-id");
     ctx.pendingOrders = [
-      { orderId: "buy-2", tokenId: "up-id", action: "buy", shares: 10, price: postedOrders.find(o => o.req.action === "buy").req.price },
-      { orderId: "sell-2", tokenId: "up-id", action: "sell", shares: 10, price: postedOrders.find(o => o.req.action === "sell").req.price },
+      { orderId: "buy-1", tokenId: "up-id", action: "buy", shares: 10, price: buyOrder1.req.price },
+      { orderId: "sell-1", tokenId: "up-id", action: "sell", shares: 10, price: sellOrder1.req.price }
     ];
-    canceledOrders.length = 0;
     postedOrders.length = 0;
+    canceledOrders.length = 0;
+
+    // Clear inFlight locks
+    evalCb();
+
+    // 2. T=2000: Simulate ONLY the SELL side being updated.
+    clock.setNowMs(2000);
+    // Remove SELL from pending so it gets recreated
+    ctx.pendingOrders = [
+      { orderId: "buy-1", tokenId: "up-id", action: "buy", shares: 10, price: buyOrder1.req.price }
+    ];
+    evalCb();
+
+    // A new SELL order should be posted, updating lastUpdateSellUpMs to 2000.
+    expect(postedOrders.filter(o => o.req.action === "sell" && o.req.tokenId === "up-id")).toHaveLength(1);
+    expect(postedOrders.filter(o => o.req.action === "buy" && o.req.tokenId === "up-id")).toHaveLength(0); // Buy did not update
     
-    // T=2100: Only 100ms elapsed since last update (MOL NOT expired).
-    // If we change price, neither should update.
-    Object.assign(ctx, settlementContext(clock, { settlement: 100_000, predictive: 102_000 })); // P(UP) ~ 0.80
+    const sellOrder2 = postedOrders.find(o => o.req.action === "sell" && o.req.tokenId === "up-id");
+    ctx.pendingOrders = [
+      { orderId: "buy-1", tokenId: "up-id", action: "buy", shares: 10, price: buyOrder1.req.price },
+      { orderId: "sell-2", tokenId: "up-id", action: "sell", shares: 10, price: sellOrder2.req.price }
+    ];
+    postedOrders.length = 0;
+    canceledOrders.length = 0;
+
+    // Clear inFlight locks again for the new sell order
+    evalCb();
+
+    // 3. T=2100: Only 100ms since SELL update. But 1100ms since BUY update.
+    clock.setNowMs(2100);
+    // Move fair value significantly (P(UP) ~ 0.65)
+    Object.assign(ctx, settlementContext(clock, { settlement: 100_000, predictive: 101_000 }));
     ctx.slotEndMs = clock.nowMs() + 86400_000;
-    clock.setNowMs(2100); 
-    // trigger eval
-    if (evalCb) evalCb();
-    
-    // Both MOLs are NOT expired at 2100 (100ms < 500). They will NOT update.
-    expect(canceledOrders).not.toContain("buy-2");
+    evalCb();
+
+    // Assert: BUY should be canceled (and replaced), SELL should NOT be canceled.
+    expect(canceledOrders).toContain("buy-1");
     expect(canceledOrders).not.toContain("sell-2");
+
+    if (cleanup) cleanup();
+  });
+
+  test("Test 2: BUY timer changes do not reset or block SELL replacement", async () => {
+    const clock = new VirtualClock();
+    clock.setNowMs(1000);
+    const postedOrders: any[] = [];
+    const canceledOrders: string[] = [];
+    let evalCb: () => void = () => {};
+
+    const ctx: Partial<StrategyContext> = {
+      clock,
+      ...settlementContext(clock, { settlement: 100_000, predictive: 100_000 }), // P(UP)=0.50
+      slotEndMs: clock.nowMs() + 86400_000, // 1 day
+      clobTokenIds: ["up-id", "down-id"],
+      orderHistory: [
+        { tokenId: "up-id", action: "buy", shares: 10, price: 0.50 } // Have inventory to enable SELL
+      ],
+      pendingOrders: [],
+      walletBalanceUsd: 100,
+      maxOpenExposureUsd: 100,
+      openExposureUsd: 0,
+      strategyConfig: {
+        shares: 10,
+        margin: 0.01,
+        minOrderLifeMs: 500,
+        priceHysteresis: 0.02,
+        activeExit: true,
+        minExitEdge: 0.005,
+      },
+      orderBook: makerBook(0.99, 0.99), // ask=0.99, bid=0.30
+      quant: { latest: () => ({ sigma: 0.5 }), subscribe: (cb: any) => { evalCb = cb; return () => {}; } },
+      postOrders: (reqs) => { postedOrders.push(...reqs); return []; },
+      cancelOrders: (ids) => { canceledOrders.push(...ids); },
+      log: () => {},
+    } as any;
+
+    const cleanup = await fairValueMaker(ctx as any);
+
+    // 1. T=1000: Strategy posts initial BUY and SELL.
+    // lastUpdateBuyUpMs = 1000, lastUpdateSellUpMs = 1000
+    const buyOrder1 = postedOrders.find(o => o.req.action === "buy" && o.req.tokenId === "up-id");
+    const sellOrder1 = postedOrders.find(o => o.req.action === "sell" && o.req.tokenId === "up-id");
+    ctx.pendingOrders = [
+      { orderId: "buy-1", tokenId: "up-id", action: "buy", shares: 10, price: buyOrder1.req.price },
+      { orderId: "sell-1", tokenId: "up-id", action: "sell", shares: 10, price: sellOrder1.req.price }
+    ];
+    postedOrders.length = 0;
+    canceledOrders.length = 0;
+
+    // Clear inFlight locks
+    evalCb();
+
+    // 2. T=2000: Simulate ONLY the BUY side being updated.
+    clock.setNowMs(2000);
+    // Remove BUY from pending so it gets recreated
+    ctx.pendingOrders = [
+      { orderId: "sell-1", tokenId: "up-id", action: "sell", shares: 10, price: sellOrder1.req.price }
+    ];
+    evalCb();
+
+    // A new BUY order should be posted, updating lastUpdateBuyUpMs to 2000.
+    expect(postedOrders.filter(o => o.req.action === "buy" && o.req.tokenId === "up-id")).toHaveLength(1);
+    expect(postedOrders.filter(o => o.req.action === "sell" && o.req.tokenId === "up-id")).toHaveLength(0); // Sell did not update
     
-    clock.setNowMs(3000); 
-    if (evalCb) evalCb();
-    
-    // Both MOLs are expired at 3000 (1000ms > 500). They will update.
-    expect(canceledOrders).toContain("buy-2");
-    expect(canceledOrders).toContain("sell-2");
-    
+    const buyOrder2 = postedOrders.find(o => o.req.action === "buy" && o.req.tokenId === "up-id");
+    ctx.pendingOrders = [
+      { orderId: "buy-2", tokenId: "up-id", action: "buy", shares: 10, price: buyOrder2.req.price },
+      { orderId: "sell-1", tokenId: "up-id", action: "sell", shares: 10, price: sellOrder1.req.price }
+    ];
+    postedOrders.length = 0;
+    canceledOrders.length = 0;
+
+    // Clear inFlight locks again for the new buy order
+    evalCb();
+
+    // 3. T=2100: Only 100ms since BUY update. But 1100ms since SELL update.
+    clock.setNowMs(2100);
+    // Move fair value significantly (P(UP) ~ 0.65)
+    Object.assign(ctx, settlementContext(clock, { settlement: 100_000, predictive: 101_000 }));
+    ctx.slotEndMs = clock.nowMs() + 86400_000;
+    evalCb();
+
+    // Assert: SELL should be canceled (and replaced), BUY should NOT be canceled.
+    expect(canceledOrders).toContain("sell-1");
+    expect(canceledOrders).not.toContain("buy-2");
+
     if (cleanup) cleanup();
   });
 });

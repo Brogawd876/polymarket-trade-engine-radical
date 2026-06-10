@@ -390,6 +390,9 @@ export const fairValueMaker: Strategy = async (ctx) => {
 
     // ── Active Exit Logic (SELLS) ──────────────────────────────────────────────
     let existingSellUp = ctx.pendingOrders.find(o => o.tokenId === upTokenId && o.action === "sell");
+    if (existingSellUp) {
+      inFlightSellUp = false;
+    }
     if (askPriceUp !== null && askPriceUp < 1.0) {
       const molExpired = (now - lastUpdateSellUpMs) >= config.minOrderLifeMs;
       if (existingSellUp && Math.abs(existingSellUp.price - askPriceUp) > (config.priceHysteresis + EPSILON) && molExpired) {
@@ -421,6 +424,9 @@ export const fairValueMaker: Strategy = async (ctx) => {
     }
 
     let existingSellDown = ctx.pendingOrders.find(o => o.tokenId === downTokenId && o.action === "sell");
+    if (existingSellDown) {
+      inFlightSellDown = false;
+    }
     if (askPriceDown !== null && askPriceDown < 1.0) {
       const molExpired = (now - lastUpdateSellDownMs) >= config.minOrderLifeMs;
       if (existingSellDown && Math.abs(existingSellDown.price - askPriceDown) > (config.priceHysteresis + EPSILON) && molExpired) {
