@@ -44,20 +44,18 @@ async function main() {
   let pairsDir = path.join("data", "pairs");
   let rawL2Dir = path.join("data", "raw-l2");
   let invalidPairsDir: string | null = null;
-  let tailBufferMs = 60000;
+  let tailBufferMs = 300000; // 5 minutes default
   let recorderDurationMs: number | undefined;
   let recorderSafetyBufferMs = 10000;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--strategy") strategy = args[++i] || strategy;
-    else if (arg === "--rounds") rounds = parseInt(args[++i] || "1", 10);
-    else if (arg === "--slot-offset") slotOffset = parseInt(args[++i] || "1", 10);
+    if (arg === "--slot-offset") slotOffset = parseInt(args[++i] || "1", 10);
     else if (arg === "--strategy-lab-timeout-ms") strategyLabTimeoutMs = parseInt(args[++i] || "120000", 10);
     else if (arg === "--pairs-dir") pairsDir = args[++i] || pairsDir;
     else if (arg === "--raw-l2-dir") rawL2Dir = args[++i] || rawL2Dir;
     else if (arg === "--invalid-pairs-dir") invalidPairsDir = args[++i] || invalidPairsDir;
-    else if (arg === "--tail-buffer-ms") tailBufferMs = parseInt(args[++i] || "60000", 10);
+    else if (arg === "--tail-buffer-ms") tailBufferMs = parseInt(args[++i] || "300000", 10);
     else if (arg === "--recorder-duration-ms") recorderDurationMs = parseInt(args[++i] || "0", 10);
     else if (arg === "--recorder-safety-buffer-ms") recorderSafetyBufferMs = parseInt(args[++i] || "10000", 10);
     else if (arg === "--prod" || arg === "--live") {
@@ -90,7 +88,7 @@ async function main() {
   const timeToSlotEnd = Math.max(0, slot.endTime - Date.now());
   const finalDurationMs = recorderDurationMs !== undefined 
     ? recorderDurationMs 
-    : timeToSlotEnd + 30000 + tailBufferMs + recorderSafetyBufferMs;
+    : timeToSlotEnd + tailBufferMs + recorderSafetyBufferMs;
 
   console.log(`[Orchestrator] Starting Raw L2 Recorder (saving to ${rawL2LogPath}, duration ${finalDurationMs}ms)...`);
   const recorderStartedAtMs = Date.now();
@@ -116,19 +114,16 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`[Orchestrator] Recorder ready. Starting bot runtime...`);
+  console.log(`[Orchestrator] Recorder ready. Starting Replay Recorder...`);
   const runtimeStartedAtMs = Date.now();
-  const runtimeCmd = ["bun", "index.ts", "--strategy", strategy, "--rounds", rounds.toString(), "--slot-offset", slotOffset.toString(), "--always-log"];
+  const runtimeCmd = ["bun", "scripts/record-replay.ts", "--slug", slug, "--out", replayLogPath, "--duration-ms", finalDurationMs.toString()];
   const runtime = execProcess(runtimeCmd[0]!, runtimeCmd.slice(1), (data) => {
-    process.stdout.write(`[Bot] ${data}`);
-  }, (data) => process.stderr.write(`[Bot ERR] ${data}`));
+    process.stdout.write(`[ReplayRecorder] ${data}`);
+  }, (data) => process.stderr.write(`[ReplayRecorder ERR] ${data}`));
 
   const { code: runtimeExitCode } = await runtime.promise;
   const runtimeEndedAtMs = Date.now();
-  console.log(`[Orchestrator] Bot runtime exited with code ${runtimeExitCode}`);
-
-  console.log(`[Orchestrator] Waiting ${tailBufferMs}ms for L2 tail buffer...`);
-  await new Promise(r => setTimeout(r, tailBufferMs));
+  console.log(`[Orchestrator] Replay Recorder exited with code ${runtimeExitCode}`);
 
   console.log(`[Orchestrator] Attempting clean recorder shutdown via stdin...`);
   recorder.process.stdin?.write("stop\n");

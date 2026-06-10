@@ -39,6 +39,9 @@ export async function validatePair(
   let rawL2SlugFound: string | null = null;
   let recorderCompletedEventSeen = false;
 
+  let chainlinkOpenAnchorSeen = false;
+  let chainlinkCloseTruthSeen = false;
+
   // Read Replay Log
   if (!existsSync(replayLogPath)) {
     validationErrors.push(`Replay log not found: ${replayLogPath}`);
@@ -50,6 +53,7 @@ export async function validatePair(
       
       let minTs: number | null = null;
       let maxTs: number | null = null;
+      let slotEndTime: number | null = null;
 
       for (const line of lines) {
         try {
@@ -61,6 +65,18 @@ export async function validatePair(
           }
           if (event.event?.slug) replaySlugFound = event.event.slug;
           if (event.slug) replaySlugFound = event.slug;
+          if (event.type === "slot" && event.action === "start") slotEndTime = event.endTime;
+
+          if (event.type === "market_price") {
+            chainlinkOpenAnchorSeen = true;
+          }
+          // The close truth is a chainlink_resolution that arrives near or after the end of the market,
+          // or explicitly has a close kind if provided.
+          if (event.type === "chainlink_resolution") {
+            if (event.kind === "close" || (slotEndTime && ts >= slotEndTime)) {
+              chainlinkCloseTruthSeen = true;
+            }
+          }
         } catch (e) {
           parseErrors.push(`Failed to parse replay event: ${e}`);
           break;
@@ -76,6 +92,13 @@ export async function validatePair(
       
       if (replaySlugFound && replaySlugFound !== slug) {
         validationErrors.push(`Replay log slug mismatch: expected ${slug}, found ${replaySlugFound}`);
+      }
+      
+      if (!chainlinkOpenAnchorSeen) {
+        validationErrors.push("Replay log is missing explicit Chainlink open anchor (market_price event).");
+      }
+      if (!chainlinkCloseTruthSeen) {
+        validationErrors.push("Replay log is missing explicit Chainlink close/settlement truth.");
       }
     } catch (e) {
       parseErrors.push(`Failed to read replay log: ${e}`);

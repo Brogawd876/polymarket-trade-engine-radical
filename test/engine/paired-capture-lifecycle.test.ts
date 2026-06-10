@@ -20,7 +20,7 @@ describe("Pair Capture Lifecycle", () => {
     const replayLog = path.join(tmpDir, `${name}-replay.log`);
     const l2Log = path.join(tmpDir, `${name}-l2.ndjson`);
     
-    fs.writeFileSync(replayLog, JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
+    fs.writeFileSync(replayLog, JSON.stringify({ type: "market_price", openPrice: 60000 }) + "\n" + JSON.stringify({ type: "chainlink_resolution", kind: "close", price: 60000 }) + "\n" + JSON.stringify({ ts: 2000, slug: "btc-updown-5m-100" }) + "\n" + JSON.stringify({ ts: 4000, slug: "btc-updown-5m-100" }) + "\n");
     
     let l2Content = JSON.stringify({ eventType: "market_book_snapshot", receivedTsMs: 1000, slug: "btc-updown-5m-100" }) + "\n";
     l2Content += JSON.stringify({ eventType: "market_trade", receivedTsMs: 5000, slug: "btc-updown-5m-100" }) + "\n";
