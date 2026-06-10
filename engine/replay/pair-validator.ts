@@ -39,6 +39,9 @@ export async function validatePair(
   let rawL2SlugFound: string | null = null;
   let recorderCompletedEventSeen = false;
 
+  let chainlinkOpenAnchorSeen = false;
+  let chainlinkCloseTruthSeen = false;
+
   // Read Replay Log
   if (!existsSync(replayLogPath)) {
     validationErrors.push(`Replay log not found: ${replayLogPath}`);
@@ -50,6 +53,7 @@ export async function validatePair(
       
       let minTs: number | null = null;
       let maxTs: number | null = null;
+      let slotEndTime: number | null = null;
 
       for (const line of lines) {
         try {
@@ -61,6 +65,19 @@ export async function validatePair(
           }
           if (event.event?.slug) replaySlugFound = event.event.slug;
           if (event.slug) replaySlugFound = event.slug;
+          if (event.type === "slot" && event.action === "start") slotEndTime = event.endTime;
+
+          if (event.type === "market_price" && event.kind === "open" && typeof event.openPrice === "number") {
+            chainlinkOpenAnchorSeen = true;
+          }
+          if (event.type === "chainlink_resolution") {
+            const chainTs = event.chainUpdatedAtMs ?? event.sourceTimestamp;
+            if (event.kind === "close") {
+              chainlinkCloseTruthSeen = true;
+            } else if (slotEndTime && chainTs >= slotEndTime && (event.quality === "resolved" || event.quality === "settled" || event.status === "closed")) {
+              chainlinkCloseTruthSeen = true;
+            }
+          }
         } catch (e) {
           parseErrors.push(`Failed to parse replay event: ${e}`);
           break;
@@ -76,6 +93,13 @@ export async function validatePair(
       
       if (replaySlugFound && replaySlugFound !== slug) {
         validationErrors.push(`Replay log slug mismatch: expected ${slug}, found ${replaySlugFound}`);
+      }
+      
+      if (!chainlinkOpenAnchorSeen) {
+        validationErrors.push("Replay log is missing explicit Chainlink open anchor (market_price event).");
+      }
+      if (!chainlinkCloseTruthSeen) {
+        validationErrors.push("Replay log is missing explicit Chainlink close/settlement truth.");
       }
     } catch (e) {
       parseErrors.push(`Failed to read replay log: ${e}`);

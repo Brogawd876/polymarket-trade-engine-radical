@@ -118,7 +118,7 @@ async function main() {
   let corpusDir = "test/fixtures/replay";
   const corpusIndex = args.indexOf("--corpus");
   if (corpusIndex !== -1 && args[corpusIndex + 1]) {
-    corpusDir = args[corpusIndex + 1];
+    corpusDir = args[corpusIndex + 1] as string;
   }
 
   const files = readdirSync(corpusDir).filter(f => f.endsWith(".log")).map(f => path.join(corpusDir, f));
