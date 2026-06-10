@@ -5,7 +5,7 @@ import * as path from "path";
 import { gitCommitFromEnv } from "../engine/event-store/events.ts";
 import { summarizeCorpusQuality } from "../engine/replay/corpus-quality.ts";
 import type { PairManifest } from "../engine/replay/pair-manifest.ts";
-import { getSlug } from "../utils/slot.ts";
+import { getSlug, getSlotTS } from "../utils/slot.ts";
 import {
   buildPairedCaptureArgs,
   countPairManifests,
@@ -23,7 +23,7 @@ const { values } = parseArgs({
     "slot-offset": { type: "string", default: "1" },
     "strategy-lab-timeout-ms": { type: "string", default: "180000" },
     "capture-gap-ms": { type: "string", default: "0" },
-    "capture-timeout-ms": { type: "string", default: "900000" },
+    "capture-timeout-ms": { type: "string", default: "1500000" },
     "duplicate-wait-ms": { type: "string", default: "5000" },
     "out-dir": { type: "string" },
     "pairs-dir": { type: "string", default: "data/pairs" },
@@ -148,6 +148,17 @@ async function main() {
     } else if (values["skip-capture"]) {
       console.log(`[Skip Capture] Skipping actual capture process...`);
     } else {
+      const slot = getSlotTS(slotOffset);
+      const timeToSlotEnd = Math.max(0, slot.endTime - Date.now());
+      const tailBufferMs = 300000; // Same as capture-paired-replay-l2 default
+      const replayDurationMs = timeToSlotEnd + tailBufferMs;
+      const recorderSafetyBufferMs = 10000;
+      const validationBufferMs = 30000;
+      if (captureTimeoutMs <= replayDurationMs + recorderSafetyBufferMs + validationBufferMs) {
+        console.warn(`\n[WARNING] captureTimeoutMs (${captureTimeoutMs}) is less than or equal to the expected paired capture duration + validation buffer (${replayDurationMs + recorderSafetyBufferMs + validationBufferMs}).`);
+        console.warn(`Consider passing a larger --capture-timeout-ms to avoid killing the capture before manifest validation completes!\n`);
+      }
+
       const cmdArgs = buildPairedCaptureArgs({
         strategy: values.strategy as string,
         rounds: values["rounds-per-capture"] as string,
