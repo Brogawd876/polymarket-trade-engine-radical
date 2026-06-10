@@ -1,0 +1,22 @@
+{
+  "strategy": "fvm-v1.3.0-profit-selective",
+  "startingBankroll": 50,
+  "endingBankroll": 50,
+  "netPnl": 0,
+  "maxDrawdown": 0,
+  "bestMarketGain": 0,
+  "worstMarketLoss": 0,
+  "marketsProcessed": 0,
+  "marketsSkipped": 0,
+  "trades": 0,
+  "fills": 0,
+  "cancels": 0,
+  "rejectedOrders": 0,
+  "riskBlocks": 0,
+  "missingAnchorBlocks": 0,
+  "totalNotionalTraded": 0,
+  "averageExposure": 0,
+  "maxExposure": 0,
+  "fillRate": 0,
+  "walletAccountingReconciled": true
+}
