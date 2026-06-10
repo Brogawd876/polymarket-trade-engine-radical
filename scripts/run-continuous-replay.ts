@@ -95,7 +95,7 @@ async function runStrategy(strategyLabel: string, logPath: string, outDir: strin
     bestMarketGain: bestMarket,
     worstMarketLoss: worstMarket,
     marketsProcessed: marketPnls.size,
-    marketsSkipped: 0, // Simplification for smoke test
+    marketsSkipped: null, // Simplification for smoke test
     trades,
     fills,
     cancels,
@@ -103,10 +103,10 @@ async function runStrategy(strategyLabel: string, logPath: string, outDir: strin
     riskBlocks: blocks,
     missingAnchorBlocks,
     totalNotionalTraded: notional,
-    averageExposure: 0, // Placeholder
-    maxExposure: 0, // Placeholder
+    averageExposure: null, // Placeholder
+    maxExposure: null, // Placeholder
     fillRate: trades > 0 ? fills / trades : 0,
-    walletAccountingReconciled: true, // Placeholder until full check
+    walletAccountingReconciled: null, // Placeholder until full check
   };
 
   writeFileSync(path.join(outDir, `${strategyLabel}_summary.json`), JSON.stringify(result, null, 2));
@@ -114,13 +114,20 @@ async function runStrategy(strategyLabel: string, logPath: string, outDir: strin
 }
 
 async function main() {
-  const corpusDir = "test/fixtures/replay";
+  const args = process.argv.slice(2);
+  let corpusDir = "test/fixtures/replay";
+  const corpusIndex = args.indexOf("--corpus");
+  if (corpusIndex !== -1 && args[corpusIndex + 1]) {
+    corpusDir = args[corpusIndex + 1];
+  }
+
   const files = readdirSync(corpusDir).filter(f => f.endsWith(".log")).map(f => path.join(corpusDir, f));
 
-  console.log(`Found ${files.length} fixture files.`);
+  console.log(`Found ${files.length} fixture files in ${corpusDir}.`);
   
-  if (files.length > 0 && files[0]!.includes("synthetic")) {
-    console.log("Continuous-bankroll runner can be smoke-tested, but profitability cannot be concluded from this corpus.");
+  const isSynthetic = files.some(f => f.includes("synthetic")) || corpusDir.includes("test/fixtures");
+  if (isSynthetic) {
+    console.warn("\n[WARNING] SMOKE-TEST ONLY. Using test fixtures. Continuous-bankroll runner can be smoke-tested, but profitability cannot be concluded from this corpus.\n");
   }
 
   const outDir = path.join("AI_WORKSPACE", "results", "continuous-bankroll", new Date().toISOString().replace(/[:.]/g, "-"));
@@ -181,7 +188,7 @@ async function main() {
     `3. Did fill count improve or worsen? Baseline Fills: ${baselineResult.fills}, Descendant Fills: ${descendantResult.fills}`,
     `4. Did order churn reduce? Baseline Trades: ${baselineResult.trades}, Descendant Trades: ${descendantResult.trades}`,
     `5. Did reduced churn preserve PnL or kill edge? (See PnL above)`,
-    `6. Did wallet accounting reconcile? Yes, no wallet invariant violations occurred.`,
+    `6. Did wallet accounting reconcile? Wallet accounting was not fully reconciled by this smoke runner.`,
     `7. Is this enough for paper trading? No, because this is a synthetic smoke test.`,
     `8. If not, what is the single next bottleneck? We need a real paired corpus (historical L2 data mapped to Chainlink resolutions) to run a meaningful continuous-bankroll profitability test.`,
   ];
