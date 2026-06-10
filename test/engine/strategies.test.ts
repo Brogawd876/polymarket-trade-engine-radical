@@ -137,6 +137,49 @@ describe("Strategy Logic Verification", () => {
     if (cleanup) cleanup();
   });
 
+  test("fair-value-maker does not quote when latestAnchor is null", async () => {
+    const clock = new VirtualClock();
+    
+    const postedOrders: any[] = [];
+    const ctx: Partial<StrategyContext> = {
+      clock,
+      ...settlementContext(clock, { settlement: 100_000, predictive: 100_043 }),
+      slotEndMs: 1000000,
+      clobTokenIds: ["up-id", "down-id"],
+      orderHistory: [],
+      pendingOrders: [],
+      walletBalanceUsd: 100,
+      strategyConfig: { makerOnly: false },
+      quant: {
+        subscribe: () => () => {},
+        latest: () => ({
+          asset: "btc",
+          timestampMs: clock.nowMs(),
+          sigma: 0.20,
+          probabilityUp: 0.65
+        }),
+      } as any,
+      postOrders: async (orders) => {
+        postedOrders.push(...orders);
+        return [];
+      },
+      cancelOrders: async () => ({ canceled: [], not_canceled: {} }),
+      orderBook: makerBook(),
+      log: () => {}
+    };
+
+    // Override the context to return null for latestAnchor
+    ctx.resolution!.latestAnchor = () => null;
+
+    const cleanup = await fairValueMaker(ctx as StrategyContext);
+    
+    clock.setNowMs(1000);
+    
+    expect(postedOrders.length).toBe(0);
+
+    if (cleanup) cleanup();
+  });
+
   test("fair-value-maker skews quotes based on inventory", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];

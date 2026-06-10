@@ -52,12 +52,20 @@ export class PolymarketResolutionAdapter implements ResolutionSourceAdapter {
     return new Promise((resolve, reject) => {
       let isResolved = false;
 
+      const timeoutId = setTimeout(() => {
+        if (!isResolved) {
+          isResolved = true;
+          reject(new Error("PolymarketResolutionAdapter WebSocket connection timed out after 10000ms"));
+        }
+      }, 10000);
+
       this.ws = createReconnectingWs({
         url: WS_URL,
         label: "PolymarketResolution",
         onopen: (ws) => {
           if (!isResolved) {
             isResolved = true;
+            clearTimeout(timeoutId);
             resolve();
           }
           ws.send(
@@ -117,6 +125,7 @@ export class PolymarketResolutionAdapter implements ResolutionSourceAdapter {
             });
             if (!isResolved) {
               isResolved = true;
+              clearTimeout(timeoutId);
               import("../../utils/errors.ts").then(({ TerminalAccessError }) => {
                 reject(new TerminalAccessError(msg, 403));
               });

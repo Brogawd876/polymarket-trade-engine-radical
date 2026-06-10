@@ -534,6 +534,15 @@ export class MarketLifecycle {
     if (this._resolution) {
       const anchor = await this._resolution.priceToBeat(round);
       if (anchor) {
+        const belongsToRound =
+          anchor.kind === "open" &&
+          (anchor.round?.slug === this.slug ||
+            anchor.round?.startTimeMs === slot.startTime);
+
+        if (belongsToRound) {
+          this._latchedAnchor = anchor;
+        }
+
         this._appendEvent("resolution_anchor", "market-lifecycle", {
           price: anchor.price,
           priceToBeat: anchor.priceToBeat ?? anchor.price,
@@ -696,7 +705,7 @@ export class MarketLifecycle {
       resolution: this._resolution ? new Proxy(this._resolution, {
         get: (target, prop, receiver) => {
           if (prop === "latestAnchor") {
-            return () => this._latchedAnchor || target.latestAnchor();
+            return () => this._latchedAnchor || null;
           }
           const val = Reflect.get(target, prop, receiver);
           return typeof val === "function" ? val.bind(target) : val;
@@ -1705,6 +1714,9 @@ export class MarketLifecycle {
       reasons,
     );
     this._appendFeedReadinessReason("venue", snapshot.venue, nowMs, reasons);
+    if (!this._latchedAnchor) {
+      reasons.push("opening settlement anchor is missing or invalid");
+    }
     return reasons;
   }
 

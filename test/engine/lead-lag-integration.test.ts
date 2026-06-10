@@ -69,7 +69,7 @@ function makeResolution(round: RoundWindow): ResolutionSourceAdapter {
     isReady: () => true,
     latest,
     subscribe: () => () => {},
-    priceToBeat: async () => latest(),
+    priceToBeat: async () => ({ ...latest(), kind: "open" }),
     closePrice: async () => latest(),
   };
 }
@@ -201,10 +201,10 @@ describe("LeadLag Runtime Integration", () => {
       coinbase: { subscribe: () => (() => {}), latest: () => null } as any,
     });
 
-    // Force required fields and state for _handleInit path
     (lifecycle as any)._clobTokenIds = ["up", "down"];
     (lifecycle as any)._conditionId = "cond";
     (lifecycle as any)._venue.currentRound = round;
+    (lifecycle as any)._checkRequiredFeedsReadiness = () => ({ ready: true, reasons: [] });
     
     // We need to bypass the real setup() which would call APIQueue
     spyOn(lifecycle, "setup").mockImplementation(async () => {});

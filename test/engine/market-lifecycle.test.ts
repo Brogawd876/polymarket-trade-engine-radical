@@ -6,6 +6,7 @@ import {
   DOWN_TOKEN,
   SLOT_END_MS,
   SLOT_START_MS,
+  FIXTURE_SLUG,
 } from "./helpers/fixture-runner.ts";
 import { waitForAsk } from "../../engine/strategy/utils.ts";
 import type { RiskGate, StrategyIntent } from "../../engine/bot-core/index.ts";
@@ -970,5 +971,170 @@ describe("Test 15: execution telemetry stages", () => {
     expect(placed?.payload.intentId).toBe(intent?.payload.intent.id);
     expect(filled?.payload.intentId).toBe(intent?.payload.intent.id);
     expect(filled?.payload.orderId).toBe(placed?.payload.orderId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 16: MarketLifecycle Anchor Latching and Proxy
+// ---------------------------------------------------------------------------
+
+import { MarketLifecycle } from "../../engine/market-lifecycle.ts";
+import { RealClock } from "../../engine/bot-core/index.ts";
+import { NullTelemetrySink } from "../../engine/telemetry/index.ts";
+
+describe("Test 16: MarketLifecycle Anchor Latching and Proxy", () => {
+  function createMockLifecycle(opts: {
+    anchor: any;
+    latestAnchorFallback: any;
+  }) {
+    const resolutionAdapter: any = {
+      role: "resolution",
+      source: "mock",
+      start: async () => {},
+      stop: async () => {},
+      isReady: () => true,
+      latest: () => opts.latestAnchorFallback || {
+        clock: { sourceTimestampMs: 0, receivedAtMs: 0, processedAtMs: 0 },
+        quality: "live",
+        freshnessMs: 0,
+      },
+      subscribe: () => () => {},
+      priceToBeat: async () => opts.anchor,
+      closePrice: async () => null,
+      latestAnchor: () => opts.latestAnchorFallback,
+    };
+
+    const lifecycle = new MarketLifecycle({
+      slug: FIXTURE_SLUG,
+      apiQueue: { queueMarketPrice: () => ({ cancel: () => {} }) } as any,
+      client: { getOrderById: () => null } as any,
+      log: () => {},
+      strategyName: "test",
+      strategy: async (ctx) => {
+        (lifecycle as any)._ctx = ctx; // Expose ctx for testing
+      },
+      tracker: { isReady: () => true, latest: () => ({}) } as any,
+      ticker: { 
+        latest: () => ({ clock: { sourceTimestampMs: Date.now(), receivedAtMs: Date.now(), processedAtMs: Date.now() }, quality: "live", freshnessMs: 0 }),
+        isReady: () => true 
+      } as any,
+      orderBook: { subscribe: () => {}, isReady: () => true, getSnapshotData: () => ({}) } as any,
+      userChannel: { subscribe: () => {}, isReady: () => true } as any,
+      resolution: resolutionAdapter,
+      clock: new RealClock(),
+      venue: { 
+        start: async () => {}, 
+        isReady: () => true, 
+        subscribe: () => () => {}, 
+        latest: () => null,
+        initRound: async () => ({ conditionId: "foo", clobTokenIds: ["up", "down"], feeRateBps: 0, closed: false })
+      } as any,
+      feedReadinessTimeoutMs: 0,
+    });
+
+    return lifecycle;
+  }
+
+  test("MarketLifecycle latches only current-round open anchor", async () => {
+    const anchor = {
+      kind: "open",
+      price: 1000,
+      round: { slug: FIXTURE_SLUG, startTimeMs: SLOT_START_MS },
+      clock: { sourceTimestampMs: Date.now(), receivedAtMs: Date.now() },
+      quality: "live"
+    };
+    const lifecycle = createMockLifecycle({ anchor, latestAnchorFallback: null });
+    
+    // @ts-ignore - trigger init manually to bypass full runner
+    await lifecycle._handleInit();
+    
+    expect((lifecycle as any)._latchedAnchor).toEqual(anchor);
+  });
+
+  test("MarketLifecycle rejects wrong-round anchor", async () => {
+    const anchor = {
+      kind: "open",
+      price: 1000,
+      round: { slug: "wrong-slug", startTimeMs: 0 },
+      clock: { sourceTimestampMs: Date.now(), receivedAtMs: Date.now() },
+      quality: "live"
+    };
+    const lifecycle = createMockLifecycle({ anchor, latestAnchorFallback: null });
+    
+    // @ts-ignore
+    await lifecycle._handleInit();
+    
+    expect((lifecycle as any)._latchedAnchor).toBeNull();
+  });
+
+  test("MarketLifecycle rejects anchor if kind is not open", async () => {
+    const anchor = {
+      kind: "live",
+      price: 1000,
+      round: { slug: FIXTURE_SLUG, startTimeMs: SLOT_START_MS },
+      clock: { sourceTimestampMs: Date.now(), receivedAtMs: Date.now() },
+      quality: "live"
+    };
+    const lifecycle = createMockLifecycle({ anchor, latestAnchorFallback: null });
+    
+    // @ts-ignore
+    await lifecycle._handleInit();
+    
+    expect((lifecycle as any)._latchedAnchor).toBeNull();
+  });
+
+  test("StrategyContext latestAnchor returns null when no latched anchor exists", async () => {
+    const fallback = { price: 999, clock: { sourceTimestampMs: Date.now(), receivedAtMs: Date.now(), processedAtMs: Date.now() }, quality: "live", freshnessMs: 0 };
+    const lifecycle = createMockLifecycle({ anchor: null, latestAnchorFallback: fallback });
+    
+    // @ts-ignore
+    await lifecycle._handleInit();
+    
+    // Strategy is never called because readiness fails due to missing anchor
+    expect((lifecycle as any)._ctx).toBeUndefined();
+    expect(lifecycle.state).toBe("DONE");
+  });
+
+  test("StrategyContext latestAnchor does not fall back to moving live latest", async () => {
+    const anchor = {
+      kind: "open",
+      price: 1000,
+      round: { slug: FIXTURE_SLUG, startTimeMs: SLOT_START_MS },
+      clock: { sourceTimestampMs: Date.now(), receivedAtMs: Date.now() },
+      quality: "live"
+    };
+    const fallback = { price: 999, clock: { sourceTimestampMs: Date.now(), receivedAtMs: Date.now(), processedAtMs: Date.now() }, quality: "live", freshnessMs: 0 };
+    // Force a mock where we latched something, but want to prove it uses latched over fallback
+    const lifecycle = createMockLifecycle({ anchor, latestAnchorFallback: fallback });
+    
+    // Bypass readiness check to allow StrategyContext to initialize in mock environment
+    (lifecycle as any)._checkRequiredFeedsReadiness = () => ({ ready: true, reasons: [] });
+    
+    // @ts-ignore
+    await lifecycle._handleInit();
+    
+    const ctx = (lifecycle as any)._ctx;
+    // The fallback is ignored
+    expect(ctx.resolution.latestAnchor().price).toBe(1000);
+  });
+
+  test("FVM keeps using latched open anchor after live RTDS latest changes", async () => {
+    const anchor = {
+      kind: "open",
+      price: 1000,
+      round: { slug: FIXTURE_SLUG, startTimeMs: SLOT_START_MS },
+      clock: { sourceTimestampMs: Date.now(), receivedAtMs: Date.now() },
+      quality: "live"
+    };
+    const fallback = { price: 999, clock: { sourceTimestampMs: Date.now(), receivedAtMs: Date.now(), processedAtMs: Date.now() }, quality: "live", freshnessMs: 0 };
+    const lifecycle = createMockLifecycle({ anchor, latestAnchorFallback: fallback });
+    
+    (lifecycle as any)._checkRequiredFeedsReadiness = () => ({ ready: true, reasons: [] });
+
+    // @ts-ignore
+    await lifecycle._handleInit();
+    
+    const ctx = (lifecycle as any)._ctx;
+    expect(ctx.resolution.latestAnchor().price).toBe(1000); // Uses latched anchor, ignores 999
   });
 });
