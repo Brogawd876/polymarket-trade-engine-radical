@@ -140,11 +140,76 @@ async function main() {
     process.exit(1);
   }
 
+  const round: any = {
+    slug,
+    asset: "btc",
+    window: "5m",
+    startTimeMs: slot.startTime,
+    endTimeMs: slot.endTime,
+    status: "active"
+  };
+
+  let latchedOpen = false;
+  let latchedClose = false;
+
+  const anchorTimer = setInterval(async () => {
+    const now = clock.nowMs();
+    
+    if (!latchedOpen && now >= slot.startTime) {
+      latchedOpen = true;
+      const anchor = await chainlink.priceToBeat(round);
+      if (anchor) {
+        writeReplayEvent(outPath, {
+          ts: clock.nowMs(),
+          type: "market_price",
+          slug,
+          kind: "open",
+          openPrice: anchor.price,
+          roundId: anchor.roundId,
+          chainUpdatedAtMs: anchor.chainUpdatedAtMs,
+          localReceivedAtMs: anchor.localReceivedAtMs,
+        });
+        console.log(`[ReplayRecorder] explicitly latched Chainlink open anchor for ${slug}`);
+      } else {
+        latchedOpen = false;
+      }
+    }
+
+    if (!latchedClose && now >= slot.endTime) {
+      latchedClose = true;
+      const closeEvt = await chainlink.closePrice(round);
+      if (closeEvt) {
+        writeReplayEvent(outPath, {
+          ts: clock.nowMs(),
+          type: "chainlink_resolution",
+          kind: "close",
+          slug,
+          price: closeEvt.price,
+          rawOracleAnswer: closeEvt.rawOracleAnswer,
+          roundId: closeEvt.roundId,
+          answeredInRound: closeEvt.answeredInRound,
+          chainUpdatedAtMs: closeEvt.chainUpdatedAtMs,
+          localReceivedAtMs: closeEvt.localReceivedAtMs,
+          oracleLagMs: closeEvt.oracleLagMs,
+          quality: closeEvt.quality,
+          stalenessStatus: closeEvt.stalenessStatus,
+          source: closeEvt.source,
+          sourceType: closeEvt.sourceType,
+          contractAddress: closeEvt.metadata?.contractAddress,
+        });
+        console.log(`[ReplayRecorder] explicitly latched Chainlink close truth for ${slug}`);
+      } else {
+        latchedClose = false;
+      }
+    }
+  }, 1000);
+
   let isShuttingDown = false;
   const shutdown = async () => {
     if (isShuttingDown) return;
     isShuttingDown = true;
     console.log(`\n[ReplayRecorder] Shutting down...`);
+    clearInterval(anchorTimer);
     
     // Write slot end event
     writeReplayEvent(outPath, {

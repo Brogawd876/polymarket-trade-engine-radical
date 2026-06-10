@@ -119,7 +119,7 @@ async function main() {
     invalidPairs = counts.invalidPairs;
   }
 
-  while (attempts < maxAttempts && validPairs < targetValidPairs) {
+  while (attempts < 7 && validPairs < targetValidPairs) {
     console.log(`\n=== Capture Attempt ${attempts + 1} / ${maxAttempts} ===`);
     console.log(`Target: ${validPairs} / ${targetValidPairs} valid pairs`);
     const targetSlug = getSlug(slotOffset);
