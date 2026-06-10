@@ -97,7 +97,7 @@ function makeResolutionAdapter(
     isReady: () => true,
     latest,
     subscribe: () => () => {},
-    priceToBeat: async () => latest(),
+    priceToBeat: async () => ({ ...latest(), kind: "open" }),
     closePrice: async () => latest(),
   };
 }

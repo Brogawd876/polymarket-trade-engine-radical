@@ -92,6 +92,7 @@ describe("Strategy Logic Verification", () => {
     
     // Mock StrategyContext
     const postedOrders: any[] = [];
+    let evalCb: any;
     const ctx: Partial<StrategyContext> = {
       clock,
       ...settlementContext(clock, { settlement: 100_000, predictive: 100_043 }),
@@ -137,9 +138,54 @@ describe("Strategy Logic Verification", () => {
     if (cleanup) cleanup();
   });
 
+  test("fair-value-maker does not quote when latestAnchor is null", async () => {
+    const clock = new VirtualClock();
+    
+    const postedOrders: any[] = [];
+    let evalCb: any;
+    const ctx: Partial<StrategyContext> = {
+      clock,
+      ...settlementContext(clock, { settlement: 100_000, predictive: 100_043 }),
+      slotEndMs: 1000000,
+      clobTokenIds: ["up-id", "down-id"],
+      orderHistory: [],
+      pendingOrders: [],
+      walletBalanceUsd: 100,
+      strategyConfig: { makerOnly: false },
+      quant: {
+        subscribe: () => () => {},
+        latest: () => ({
+          asset: "btc",
+          timestampMs: clock.nowMs(),
+          sigma: 0.20,
+          probabilityUp: 0.65
+        }),
+      } as any,
+      postOrders: async (orders) => {
+        postedOrders.push(...orders);
+        return [];
+      },
+      cancelOrders: async () => ({ canceled: [], not_canceled: {} }),
+      orderBook: makerBook(),
+      log: () => {}
+    };
+
+    // Override the context to return null for latestAnchor
+    ctx.resolution!.latestAnchor = () => null;
+
+    const cleanup = await fairValueMaker(ctx as StrategyContext);
+    
+    clock.setNowMs(1000);
+    
+    expect(postedOrders.length).toBe(0);
+
+    if (cleanup) cleanup();
+  });
+
   test("fair-value-maker skews quotes based on inventory", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     
     const ctx: Partial<StrategyContext> = {
       clock,
@@ -174,7 +220,7 @@ describe("Strategy Logic Verification", () => {
     await fairValueMaker(ctx as StrategyContext);
     clock.setNowMs(1000);
 
-    const upOrder = postedOrders.find(o => o.req.tokenId === "up-id");
+    const upOrder = postedOrders.find(o => o.req.tokenId === "up-id" && o.req.action === "buy");
     expect(upOrder.req.price).toBeGreaterThan(0.45);
     expect(upOrder.req.price).toBeLessThan(0.48);
     
@@ -220,6 +266,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker maker-only quote does not cross the ask", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const ctx: Partial<StrategyContext> = {
       clock,
       ...settlementContext(clock, { settlement: 100_000, predictive: 100_100 }),
@@ -259,6 +306,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker does not emit extreme BUY UP maker bids by default", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const logs: string[] = [];
     const ctx: Partial<StrategyContext> = {
       clock,
@@ -298,6 +346,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker does not emit extreme BUY DOWN maker bids by default", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const logs: string[] = [];
     const ctx: Partial<StrategyContext> = {
       clock,
@@ -336,6 +385,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker obeys lower configured max maker bid", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const logs: string[] = [];
     const ctx: Partial<StrategyContext> = {
       clock,
@@ -374,6 +424,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker suppresses repeated exposure-limit blocked BUY UP intent", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const logs: string[] = [];
     const ctx: Partial<StrategyContext> = {
       clock,
@@ -418,6 +469,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker suppresses repeated exposure-limit blocked BUY DOWN intent", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const logs: string[] = [];
     const ctx: Partial<StrategyContext> = {
       clock,
@@ -462,6 +514,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker allows materially different price during exposure cooldown", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     let upAsk = 0.65;
     const ctx: Partial<StrategyContext> = {
       clock,
@@ -510,6 +563,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker exposure suppression expires after cooldown", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const ctx: Partial<StrategyContext> = {
       clock,
       ...settlementContext(clock, { settlement: 100_000, predictive: 100_043 }),
@@ -554,6 +608,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker exposure suppression resets when exposure state changes", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const orderHistory: StrategyContext["orderHistory"] = [];
     const ctx: Partial<StrategyContext> = {
       clock,
@@ -597,6 +652,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker does not suppress non-exposure risk failures", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const ctx: Partial<StrategyContext> = {
       clock,
       ...settlementContext(clock, { settlement: 100_000, predictive: 100_043 }),
@@ -637,6 +693,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker counts DOWN inventory as negative UP exposure", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const ctx: Partial<StrategyContext> = {
       clock,
       ...settlementContext(clock, { settlement: 100_000, predictive: 100_000 }),
@@ -667,8 +724,8 @@ describe("Strategy Logic Verification", () => {
     const cleanup = await fairValueMaker(ctx as StrategyContext);
     clock.setNowMs(1000);
 
-    const upOrder = postedOrders.find(o => o.req.tokenId === "up-id");
-    const downOrder = postedOrders.find(o => o.req.tokenId === "down-id");
+    const upOrder = postedOrders.find(o => o.req.tokenId === "up-id" && o.req.action === "buy");
+    const downOrder = postedOrders.find(o => o.req.tokenId === "down-id" && o.req.action === "buy");
     expect(upOrder.req.price).toBeGreaterThan(0.50);
     expect(downOrder.req.price).toBeLessThan(0.48);
     if (cleanup) cleanup();
@@ -677,6 +734,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker blocks quotes during jump regime", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const canceled: string[][] = [];
     const ctx: Partial<StrategyContext> = {
       clock,
@@ -716,6 +774,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker blocks quotes above max sigma", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const canceled: string[][] = [];
     const logs: string[] = [];
     const ctx: Partial<StrategyContext> = {
@@ -813,6 +872,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker dynamic shares sizing (pct_of_balance)", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const ctx: Partial<StrategyContext> = {
       clock,
       ...settlementContext(clock, { settlement: 100_000, predictive: 100_043 }),
@@ -857,6 +917,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker exposure-aware sizing clamp", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const logs: string[] = [];
     const ctx: Partial<StrategyContext> = {
       clock,
@@ -912,6 +973,7 @@ describe("Strategy Logic Verification", () => {
   test("fair-value-maker suppresses unaffordable live-sized quotes before posting", async () => {
     const clock = new VirtualClock();
     const postedOrders: any[] = [];
+    let evalCb: any;
     const logs: string[] = [];
     const ctx: Partial<StrategyContext> = {
       clock,
@@ -954,4 +1016,181 @@ describe("Strategy Logic Verification", () => {
     if (cleanup) cleanup();
   });
 
+  test("Test 1: SELL timer changes do not reset or block BUY replacement", async () => {
+    const clock = new VirtualClock();
+    clock.setNowMs(1000);
+    const postedOrders: any[] = [];
+    const canceledOrders: string[] = [];
+    let evalCb: () => void = () => {};
+
+    const ctx: Partial<StrategyContext> = {
+      clock,
+      ...settlementContext(clock, { settlement: 100_000, predictive: 100_000 }), // P(UP)=0.50
+      slotEndMs: clock.nowMs() + 86400_000, // 1 day
+      clobTokenIds: ["up-id", "down-id"],
+      orderHistory: [
+        { tokenId: "up-id", action: "buy", shares: 10, price: 0.50 } // Have inventory to enable SELL
+      ],
+      pendingOrders: [],
+      walletBalanceUsd: 100,
+      maxOpenExposureUsd: 100,
+      openExposureUsd: 0,
+      strategyConfig: {
+        shares: 10,
+        margin: 0.01,
+        minOrderLifeMs: 500,
+        priceHysteresis: 0.02,
+        activeExit: true,
+        minExitEdge: 0.005,
+      },
+      orderBook: makerBook(0.99, 0.99), // ask=0.99, bid=0.30
+      quant: { latest: () => ({ sigma: 0.5 }), subscribe: (cb: any) => { evalCb = cb; return () => {}; } },
+      postOrders: (reqs) => { postedOrders.push(...reqs); return []; },
+      cancelOrders: (ids) => { canceledOrders.push(...ids); },
+      log: () => {},
+    } as any;
+
+    const cleanup = await fairValueMaker(ctx as any);
+
+    // 1. T=1000: Strategy posts initial BUY and SELL.
+    // lastUpdateBuyUpMs = 1000, lastUpdateSellUpMs = 1000
+    expect(postedOrders.filter(o => o.req.action === "buy" && o.req.tokenId === "up-id")).toHaveLength(1);
+    expect(postedOrders.filter(o => o.req.action === "sell" && o.req.tokenId === "up-id")).toHaveLength(1);
+
+    // Put them in pending
+    const buyOrder1 = postedOrders.find(o => o.req.action === "buy" && o.req.tokenId === "up-id");
+    const sellOrder1 = postedOrders.find(o => o.req.action === "sell" && o.req.tokenId === "up-id");
+    ctx.pendingOrders = [
+      { orderId: "buy-1", tokenId: "up-id", action: "buy", shares: 10, price: buyOrder1.req.price },
+      { orderId: "sell-1", tokenId: "up-id", action: "sell", shares: 10, price: sellOrder1.req.price }
+    ];
+    postedOrders.length = 0;
+    canceledOrders.length = 0;
+
+    // Clear inFlight locks
+    evalCb();
+
+    // 2. T=2000: Simulate ONLY the SELL side being updated.
+    clock.setNowMs(2000);
+    // Remove SELL from pending so it gets recreated
+    ctx.pendingOrders = [
+      { orderId: "buy-1", tokenId: "up-id", action: "buy", shares: 10, price: buyOrder1.req.price }
+    ];
+    evalCb();
+
+    // A new SELL order should be posted, updating lastUpdateSellUpMs to 2000.
+    expect(postedOrders.filter(o => o.req.action === "sell" && o.req.tokenId === "up-id")).toHaveLength(1);
+    expect(postedOrders.filter(o => o.req.action === "buy" && o.req.tokenId === "up-id")).toHaveLength(0); // Buy did not update
+    
+    const sellOrder2 = postedOrders.find(o => o.req.action === "sell" && o.req.tokenId === "up-id");
+    ctx.pendingOrders = [
+      { orderId: "buy-1", tokenId: "up-id", action: "buy", shares: 10, price: buyOrder1.req.price },
+      { orderId: "sell-2", tokenId: "up-id", action: "sell", shares: 10, price: sellOrder2.req.price }
+    ];
+    postedOrders.length = 0;
+    canceledOrders.length = 0;
+
+    // Clear inFlight locks again for the new sell order
+    evalCb();
+
+    // 3. T=2100: Only 100ms since SELL update. But 1100ms since BUY update.
+    clock.setNowMs(2100);
+    // Move fair value significantly (P(UP) ~ 0.65)
+    Object.assign(ctx, settlementContext(clock, { settlement: 100_000, predictive: 101_000 }));
+    ctx.slotEndMs = clock.nowMs() + 86400_000;
+    evalCb();
+
+    // Assert: BUY should be canceled (and replaced), SELL should NOT be canceled.
+    expect(canceledOrders).toContain("buy-1");
+    expect(canceledOrders).not.toContain("sell-2");
+
+    if (cleanup) cleanup();
+  });
+
+  test("Test 2: BUY timer changes do not reset or block SELL replacement", async () => {
+    const clock = new VirtualClock();
+    clock.setNowMs(1000);
+    const postedOrders: any[] = [];
+    const canceledOrders: string[] = [];
+    let evalCb: () => void = () => {};
+
+    const ctx: Partial<StrategyContext> = {
+      clock,
+      ...settlementContext(clock, { settlement: 100_000, predictive: 100_000 }), // P(UP)=0.50
+      slotEndMs: clock.nowMs() + 86400_000, // 1 day
+      clobTokenIds: ["up-id", "down-id"],
+      orderHistory: [
+        { tokenId: "up-id", action: "buy", shares: 10, price: 0.50 } // Have inventory to enable SELL
+      ],
+      pendingOrders: [],
+      walletBalanceUsd: 100,
+      maxOpenExposureUsd: 100,
+      openExposureUsd: 0,
+      strategyConfig: {
+        shares: 10,
+        margin: 0.01,
+        minOrderLifeMs: 500,
+        priceHysteresis: 0.02,
+        activeExit: true,
+        minExitEdge: 0.005,
+      },
+      orderBook: makerBook(0.99, 0.99), // ask=0.99, bid=0.30
+      quant: { latest: () => ({ sigma: 0.5 }), subscribe: (cb: any) => { evalCb = cb; return () => {}; } },
+      postOrders: (reqs) => { postedOrders.push(...reqs); return []; },
+      cancelOrders: (ids) => { canceledOrders.push(...ids); },
+      log: () => {},
+    } as any;
+
+    const cleanup = await fairValueMaker(ctx as any);
+
+    // 1. T=1000: Strategy posts initial BUY and SELL.
+    // lastUpdateBuyUpMs = 1000, lastUpdateSellUpMs = 1000
+    const buyOrder1 = postedOrders.find(o => o.req.action === "buy" && o.req.tokenId === "up-id");
+    const sellOrder1 = postedOrders.find(o => o.req.action === "sell" && o.req.tokenId === "up-id");
+    ctx.pendingOrders = [
+      { orderId: "buy-1", tokenId: "up-id", action: "buy", shares: 10, price: buyOrder1.req.price },
+      { orderId: "sell-1", tokenId: "up-id", action: "sell", shares: 10, price: sellOrder1.req.price }
+    ];
+    postedOrders.length = 0;
+    canceledOrders.length = 0;
+
+    // Clear inFlight locks
+    evalCb();
+
+    // 2. T=2000: Simulate ONLY the BUY side being updated.
+    clock.setNowMs(2000);
+    // Remove BUY from pending so it gets recreated
+    ctx.pendingOrders = [
+      { orderId: "sell-1", tokenId: "up-id", action: "sell", shares: 10, price: sellOrder1.req.price }
+    ];
+    evalCb();
+
+    // A new BUY order should be posted, updating lastUpdateBuyUpMs to 2000.
+    expect(postedOrders.filter(o => o.req.action === "buy" && o.req.tokenId === "up-id")).toHaveLength(1);
+    expect(postedOrders.filter(o => o.req.action === "sell" && o.req.tokenId === "up-id")).toHaveLength(0); // Sell did not update
+    
+    const buyOrder2 = postedOrders.find(o => o.req.action === "buy" && o.req.tokenId === "up-id");
+    ctx.pendingOrders = [
+      { orderId: "buy-2", tokenId: "up-id", action: "buy", shares: 10, price: buyOrder2.req.price },
+      { orderId: "sell-1", tokenId: "up-id", action: "sell", shares: 10, price: sellOrder1.req.price }
+    ];
+    postedOrders.length = 0;
+    canceledOrders.length = 0;
+
+    // Clear inFlight locks again for the new buy order
+    evalCb();
+
+    // 3. T=2100: Only 100ms since BUY update. But 1100ms since SELL update.
+    clock.setNowMs(2100);
+    // Move fair value significantly (P(UP) ~ 0.65)
+    Object.assign(ctx, settlementContext(clock, { settlement: 100_000, predictive: 101_000 }));
+    ctx.slotEndMs = clock.nowMs() + 86400_000;
+    evalCb();
+
+    // Assert: SELL should be canceled (and replaced), BUY should NOT be canceled.
+    expect(canceledOrders).toContain("sell-1");
+    expect(canceledOrders).not.toContain("buy-2");
+
+    if (cleanup) cleanup();
+  });
 });

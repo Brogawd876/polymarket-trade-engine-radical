@@ -21,6 +21,7 @@ import { TradeTapeTracker } from "../tracker/trade-tape.ts";
 import { Env } from "../utils/config.ts";
 import {
   ChainlinkResolutionAdapter,
+  PolymarketResolutionAdapter,
   BinancePredictiveAdapter,
   CoinbasePredictiveAdapter,
   DefaultPredictiveAggregator,
@@ -340,11 +341,13 @@ export class EarlyBird {
       let initialBalance: number;
       if (this._prod) {
         await this._client.updateUSDCBalance();
-        initialBalance = await this._client.getUSDCBalance();
-        log.write(`[startup] On-chain balance: $${initialBalance.toFixed(2)}`);
-        if (initialBalance === 0) {
+        const onChainBalance = await this._client.getUSDCBalance();
+        const envBalance = process.env.WALLET_BALANCE ? parseFloat(process.env.WALLET_BALANCE) : onChainBalance;
+        initialBalance = Math.min(onChainBalance, envBalance);
+        log.write(`[startup] On-chain balance: $${onChainBalance.toFixed(2)} | Budget cap: $${initialBalance.toFixed(2)}`);
+        if (initialBalance <= 0) {
           throw new InsufficientBalanceError(
-            "Wallet balance is $0.00. Fund your funder wallet with pUSD before starting the engine.\n" +
+            "Budget or Wallet balance is $0.00. Fund your funder wallet with pUSD before starting the engine.\n" +
             "Run `bun scripts/pusd.ts wrap` to convert USDC.e → pUSD, or see docs/MIGRATE_V2.md."
           );
         }

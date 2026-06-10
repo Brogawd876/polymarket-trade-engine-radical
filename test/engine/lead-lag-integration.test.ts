@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, spyOn } from "bun:test";
 import { EarlyBird } from "../../engine/early-bird.ts";
 import { TickerTracker } from "../../tracker/ticker";
-import { PolymarketResolutionAdapter } from "../../engine/bot-core/polymarket-resolution-adapter.ts";
+import { ChainlinkResolutionAdapter } from "../../engine/bot-core/chainlink-resolution-adapter.ts";
 import { BinancePredictiveAdapter } from "../../engine/bot-core/binance-predictive-adapter.ts";
 import { CoinbasePredictiveAdapter } from "../../engine/bot-core/coinbase-predictive-adapter.ts";
 import { MarketLifecycle } from "../../engine/market-lifecycle.ts";
@@ -69,7 +69,7 @@ function makeResolution(round: RoundWindow): ResolutionSourceAdapter {
     isReady: () => true,
     latest,
     subscribe: () => () => {},
-    priceToBeat: async () => latest(),
+    priceToBeat: async () => ({ ...latest(), kind: "open" }),
     closePrice: async () => latest(),
   };
 }
@@ -105,7 +105,7 @@ describe("LeadLag Runtime Integration", () => {
     // Mock dependencies to avoid real network/WS
     spyOn(TickerTracker.prototype, "schedule").mockImplementation(() => {});
     spyOn(TickerTracker.prototype, "waitForReady").mockImplementation(async () => {});
-    spyOn(PolymarketResolutionAdapter.prototype, "start").mockImplementation(async () => {});
+    spyOn(ChainlinkResolutionAdapter.prototype, "start").mockImplementation(async () => {});
     spyOn(BinancePredictiveAdapter.prototype, "start").mockImplementation(async () => {});
     spyOn(CoinbasePredictiveAdapter.prototype, "start").mockImplementation(async () => {});
 
@@ -201,10 +201,10 @@ describe("LeadLag Runtime Integration", () => {
       coinbase: { subscribe: () => (() => {}), latest: () => null } as any,
     });
 
-    // Force required fields and state for _handleInit path
     (lifecycle as any)._clobTokenIds = ["up", "down"];
     (lifecycle as any)._conditionId = "cond";
     (lifecycle as any)._venue.currentRound = round;
+    (lifecycle as any)._checkRequiredFeedsReadiness = () => ({ ready: true, reasons: [] });
     
     // We need to bypass the real setup() which would call APIQueue
     spyOn(lifecycle, "setup").mockImplementation(async () => {});

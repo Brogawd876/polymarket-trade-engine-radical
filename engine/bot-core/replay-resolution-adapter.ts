@@ -46,8 +46,7 @@ export class ReplayResolutionAdapter implements ResolutionSourceAdapter {
     if (this.latchedAnchor && this.latchedAnchor.round?.slug === round.slug) {
       return this.latchedAnchor;
     }
-    // Replay expectation: kind: 'open' event in log must precede this call
-    return this.latchedAnchor;
+    return null;
   }
 
   async closePrice(round: RoundWindow): Promise<ResolutionPriceEvent | null> {

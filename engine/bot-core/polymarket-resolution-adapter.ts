@@ -49,77 +49,103 @@ export class PolymarketResolutionAdapter implements ResolutionSourceAdapter {
   async start(): Promise<void> {
     const WS_URL = "wss://ws-live-data.polymarket.com";
 
-    this.ws = createReconnectingWs({
-      url: WS_URL,
-      label: "PolymarketResolution",
-      onopen: (ws) => {
-        ws.send(
-          JSON.stringify({
-            action: "subscribe",
-            subscriptions: [
-              {
-                topic: "crypto_prices_chainlink",
-                type: "update",
-                filters: JSON.stringify({ symbol: this.polymarketSymbol }),
-              },
-            ],
-          }),
-        );
-        this._telemetry.push({
-          ts: this._clock.nowMs(),
-          type: "FEED_STATUS",
-          payload: { feed: "polymarket-resolution", status: "connected", quality: "live" }
-        });
-      },
-      onmessage: (event) => {
-        if (!event.data) return;
-        const json = JSON.parse(event.data as string);
-        const price: number = json.payload?.value;
-        if (typeof price !== "number") return;
+    return new Promise((resolve, reject) => {
+      let isResolved = false;
 
-        const sourceTimestampMs: number | null = json.timestamp;
-        const clock = createEventClock({
-          sourceTimestampMs,
-          receivedAtMs: this._clock.nowMs(),
-        });
+      const timeoutId = setTimeout(() => {
+        if (!isResolved) {
+          isResolved = true;
+          if (this.ws) {
+            try { this.ws.destroy(); } catch(e) {}
+          }
+          reject(new Error("PolymarketResolutionAdapter WebSocket connection timed out after 10000ms"));
+        }
+      }, 10000);
 
-        const resEvent: ResolutionPriceEvent = {
-          id: `poly-rtds-${clock.monotonicReceivedNs}`,
-          role: "resolution",
-          source: "polymarket-chainlink-rtds",
-          sourceType: "polymarket_chainlink_rtds",
-          asset: this.asset,
-          kind: "live",
-          price,
-          clock,
-          quality: this.isStale(clock) ? "stale" : "live",
-          freshnessMs: measureFreshness(clock),
-          lagMs: 0,
-        };
-
-        this._latest = resEvent;
-        this.notify(resEvent);
-      },
-      isTerminal: (event) => {
-        if (event.code === 4003 || event.reason.toLowerCase().includes("forbidden")) {
-          const msg = "Polymarket access appears to be blocked from this network or region (403 Forbidden).";
+      this.ws = createReconnectingWs({
+        url: WS_URL,
+        label: "PolymarketResolution",
+        onopen: (ws) => {
+          if (!isResolved) {
+            isResolved = true;
+            clearTimeout(timeoutId);
+            resolve();
+          }
+          ws.send(
+            JSON.stringify({
+              action: "subscribe",
+              subscriptions: [
+                {
+                  topic: "crypto_prices_chainlink",
+                  type: "update",
+                  filters: JSON.stringify({ symbol: this.polymarketSymbol }),
+                },
+              ],
+            }),
+          );
           this._telemetry.push({
             ts: this._clock.nowMs(),
             type: "FEED_STATUS",
-            payload: { feed: "polymarket-resolution", status: "forbidden", quality: "missing", message: msg }
+            payload: { feed: "polymarket-resolution", status: "connected", quality: "live" }
           });
-          return msg;
+        },
+        onmessage: (event) => {
+          if (!event.data) return;
+          const json = JSON.parse(event.data as string);
+          const price: number = json.payload?.value;
+          if (typeof price !== "number") return;
+
+          const sourceTimestampMs: number | null = json.timestamp;
+          const clock = createEventClock({
+            sourceTimestampMs,
+            receivedAtMs: this._clock.nowMs(),
+          });
+
+          const resEvent: ResolutionPriceEvent = {
+            id: `poly-rtds-${clock.monotonicReceivedNs}`,
+            role: "resolution",
+            source: "polymarket-chainlink-rtds",
+            sourceType: "polymarket_chainlink_rtds",
+            asset: this.asset,
+            kind: "live",
+            price,
+            clock,
+            quality: this.isStale(clock) ? "stale" : "live",
+            freshnessMs: measureFreshness(clock),
+            lagMs: 0,
+          };
+
+          this._latest = resEvent;
+          this.notify(resEvent);
+        },
+        isTerminal: (event) => {
+          if (event.code === 4003 || event.reason.toLowerCase().includes("forbidden")) {
+            const msg = "Polymarket access appears to be blocked from this network or region (403 Forbidden).";
+            this._telemetry.push({
+              ts: this._clock.nowMs(),
+              type: "FEED_STATUS",
+              payload: { feed: "polymarket-resolution", status: "forbidden", quality: "missing", message: msg }
+            });
+            if (!isResolved) {
+              isResolved = true;
+              clearTimeout(timeoutId);
+              import("../../utils/errors.ts").then(({ TerminalAccessError }) => {
+                reject(new TerminalAccessError(msg, 403));
+              });
+            }
+            return msg;
+          }
+          return null;
+        },
+        onerror: (err) => {
+          this._telemetry.push({
+            ts: this._clock.nowMs(),
+            type: "FEED_STATUS",
+            payload: { feed: "polymarket-resolution", status: "error", quality: "missing", message: String(err) }
+          });
+          console.error("Polymarket Resolution WS error:", JSON.stringify(err));
         }
-        return null;
-      },
-      onerror: (err) => {
-        this._telemetry.push({
-          ts: this._clock.nowMs(),
-          type: "FEED_STATUS",
-          payload: { feed: "polymarket-resolution", status: "error", quality: "missing", message: String(err) }
-        });
-        console.error("Polymarket Resolution WS error:", JSON.stringify(err));
-      }
+      });
     });
   }
 
