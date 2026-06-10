@@ -2,17 +2,17 @@ import { describe, expect, test, spyOn, afterEach } from "bun:test";
 import { EarlyBird } from "../../engine/early-bird.ts";
 import { TerminalAccessError } from "../../utils/errors";
 import { TickerTracker } from "../../tracker/ticker";
-import { PolymarketResolutionAdapter } from "../../engine/bot-core/polymarket-resolution-adapter";
+import { ChainlinkResolutionAdapter } from "../../engine/bot-core/chainlink-resolution-adapter";
 
 describe("Engine-Level Geoblock Shutdown", () => {
   afterEach(() => {
     spyOn(TickerTracker.prototype, "waitForReady").mockRestore();
-    spyOn(PolymarketResolutionAdapter.prototype, "start").mockRestore();
+    spyOn(ChainlinkResolutionAdapter.prototype, "start").mockRestore();
   });
 
   test("EarlyBird start() fails fast on terminal resolution block", async () => {
     spyOn(TickerTracker.prototype, "waitForReady").mockImplementation(async () => {});
-    spyOn(PolymarketResolutionAdapter.prototype, "start").mockImplementation(async () => {
+    spyOn(ChainlinkResolutionAdapter.prototype, "start").mockImplementation(async () => {
       throw new TerminalAccessError("Geoblocked", 403);
     });
 

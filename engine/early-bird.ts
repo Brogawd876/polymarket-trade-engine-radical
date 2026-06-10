@@ -196,10 +196,10 @@ export class EarlyBird {
       this._coinbase = new ReplayPredictiveAdapter("coinbase", this._replayReader);
     } else {
       this._ticker = new TickerTracker();
-      this._resolution = new PolymarketResolutionAdapter(
-        this._clock,
-        this._telemetry,
-      );
+      this._resolution = new ChainlinkResolutionAdapter({
+        clock: this._clock,
+        telemetry: this._telemetry,
+      });
       this._binance = new BinancePredictiveAdapter(this._clock, this._telemetry);
       this._coinbase = new CoinbasePredictiveAdapter(this._clock, this._telemetry);
     }

@@ -147,8 +147,10 @@ export const fairValueMaker: Strategy = async (ctx) => {
   let lastAnchorUpdateMs = 0;
 
   // ── MOL (Minimum Order Life) State ───────────────────────────────────────────
-  let lastUpdateUpMs = 0;
-  let lastUpdateDownMs = 0;
+  let lastUpdateBuyUpMs = 0;
+  let lastUpdateBuyDownMs = 0;
+  let lastUpdateSellUpMs = 0;
+  let lastUpdateSellDownMs = 0;
 
   const evaluateQuotes = async () => {
     if (isDone) return;
@@ -389,13 +391,13 @@ export const fairValueMaker: Strategy = async (ctx) => {
     // ── Active Exit Logic (SELLS) ──────────────────────────────────────────────
     let existingSellUp = ctx.pendingOrders.find(o => o.tokenId === upTokenId && o.action === "sell");
     if (askPriceUp !== null && askPriceUp < 1.0) {
-      const molExpired = (now - lastUpdateUpMs) >= config.minOrderLifeMs;
+      const molExpired = (now - lastUpdateSellUpMs) >= config.minOrderLifeMs;
       if (existingSellUp && Math.abs(existingSellUp.price - askPriceUp) > (config.priceHysteresis + EPSILON) && molExpired) {
         ctx.log(`[fair-value] Canceling existing UP sell quote: ${existingSellUp.price} -> new target ${askPriceUp}`, "dim");
         ctx.cancelOrders([existingSellUp.orderId]);
       } else if (!existingSellUp && sellableUp >= config.minShares && !inFlightSellUp) {
         inFlightSellUp = true;
-        lastUpdateUpMs = now;
+        lastUpdateSellUpMs = now;
         ordersToPost.push({
           req: {
             tokenId: upTokenId,
@@ -420,13 +422,13 @@ export const fairValueMaker: Strategy = async (ctx) => {
 
     let existingSellDown = ctx.pendingOrders.find(o => o.tokenId === downTokenId && o.action === "sell");
     if (askPriceDown !== null && askPriceDown < 1.0) {
-      const molExpired = (now - lastUpdateDownMs) >= config.minOrderLifeMs;
+      const molExpired = (now - lastUpdateSellDownMs) >= config.minOrderLifeMs;
       if (existingSellDown && Math.abs(existingSellDown.price - askPriceDown) > (config.priceHysteresis + EPSILON) && molExpired) {
         ctx.log(`[fair-value] Canceling existing DOWN sell quote: ${existingSellDown.price} -> new target ${askPriceDown}`, "dim");
         ctx.cancelOrders([existingSellDown.orderId]);
       } else if (!existingSellDown && sellableDown >= config.minShares && !inFlightSellDown) {
         inFlightSellDown = true;
-        lastUpdateDownMs = now;
+        lastUpdateSellDownMs = now;
         ordersToPost.push({
           req: {
             tokenId: downTokenId,
@@ -554,7 +556,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
 
     if (bidPriceUp !== null && bidPriceUp > 0.01 && bidPriceUp < 0.99 && evUp.edge >= config.minEdge && allowUpFlow) {
       // v1.3.0 — Falling-Knife Block: suppress new UP buys if we've detected consecutive adverse fills
-      const molExpired = (now - lastUpdateUpMs) >= config.minOrderLifeMs;
+      const molExpired = (now - lastUpdateBuyUpMs) >= config.minOrderLifeMs;
       if (config.fallingKnifeBlock && sideBlockedUp) {
         if (ctx.clock.nowMs() % 10000 === 0) {
           ctx.log(`[fair-value] v1.3.0 falling-knife block: UP side blocked (${consecutiveAdverseUp} consecutive adverse fills)`, "yellow");
@@ -572,7 +574,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
           const exposureKey = exposureBlockKey(ctx, "UP", bidPriceUp, sharesToBuy);
           if (!isExposureBlocked(ctx, exposureBlockCooldowns, exposureKey, "UP", bidPriceUp, sharesToBuy)) {
             inFlightUp = true;
-            lastUpdateUpMs = now;
+            lastUpdateBuyUpMs = now;
             const capturedFillPriceUp = bidPriceUp;
             ordersToPost.push({
               req: {
@@ -615,7 +617,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
 
     if (bidPriceDown !== null && bidPriceDown > 0.01 && bidPriceDown < 0.99 && evDown.edge >= config.minEdge && allowDownFlow) {
       // v1.3.0 — Falling-Knife Block: suppress new DOWN buys if we've detected consecutive adverse fills
-      const molExpired = (now - lastUpdateDownMs) >= config.minOrderLifeMs;
+      const molExpired = (now - lastUpdateBuyDownMs) >= config.minOrderLifeMs;
       if (config.fallingKnifeBlock && sideBlockedDown) {
         if (ctx.clock.nowMs() % 10000 === 0) {
           ctx.log(`[fair-value] v1.3.0 falling-knife block: DOWN side blocked (${consecutiveAdverseDown} consecutive adverse fills)`, "yellow");
@@ -633,7 +635,7 @@ export const fairValueMaker: Strategy = async (ctx) => {
           const exposureKey = exposureBlockKey(ctx, "DOWN", bidPriceDown, sharesToBuy);
           if (!isExposureBlocked(ctx, exposureBlockCooldowns, exposureKey, "DOWN", bidPriceDown, sharesToBuy)) {
             inFlightDown = true;
-            lastUpdateDownMs = now;
+            lastUpdateBuyDownMs = now;
             const capturedFillPriceDown = bidPriceDown;
             ordersToPost.push({
               req: {
