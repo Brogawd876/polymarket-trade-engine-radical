@@ -86,15 +86,18 @@ async function main() {
   const captureStartedAtMs = Date.now();
 
   const timeToSlotEnd = Math.max(0, slot.endTime - Date.now());
-  const finalDurationMs = recorderDurationMs !== undefined 
-    ? recorderDurationMs 
-    : timeToSlotEnd + tailBufferMs + recorderSafetyBufferMs;
+  const replayDurationMs =
+    recorderDurationMs !== undefined 
+      ? recorderDurationMs 
+      : timeToSlotEnd + tailBufferMs;
 
-  console.log(`[Orchestrator] Starting Raw L2 Recorder (saving to ${rawL2LogPath}, duration ${finalDurationMs}ms)...`);
+  const rawL2DurationMs = replayDurationMs + recorderSafetyBufferMs;
+
+  console.log(`[Orchestrator] Starting Raw L2 Recorder (saving to ${rawL2LogPath}, duration ${rawL2DurationMs}ms)...`);
   const recorderStartedAtMs = Date.now();
   let recorderReady = false;
   
-  const recorderCmd = ["bun", "scripts/record-raw-l2.ts", "--slug", slug, "--out", rawL2LogPath, "--duration-ms", finalDurationMs.toString()];
+  const recorderCmd = ["bun", "scripts/record-raw-l2.ts", "--slug", slug, "--out", rawL2LogPath, "--duration-ms", rawL2DurationMs.toString()];
   const recorder = execProcess(recorderCmd[0]!, recorderCmd.slice(1), (data) => {
     process.stdout.write(`[Recorder] ${data}`);
     if (data.includes("Recorder is running")) {
@@ -116,7 +119,7 @@ async function main() {
 
   console.log(`[Orchestrator] Recorder ready. Starting Replay Recorder...`);
   const runtimeStartedAtMs = Date.now();
-  const runtimeCmd = ["bun", "scripts/record-replay.ts", "--slug", slug, "--out", replayLogPath, "--duration-ms", finalDurationMs.toString()];
+  const runtimeCmd = ["bun", "scripts/record-replay.ts", "--slug", slug, "--out", replayLogPath, "--duration-ms", replayDurationMs.toString()];
   const runtime = execProcess(runtimeCmd[0]!, runtimeCmd.slice(1), (data) => {
     process.stdout.write(`[ReplayRecorder] ${data}`);
   }, (data) => process.stderr.write(`[ReplayRecorder ERR] ${data}`));
