@@ -203,11 +203,12 @@ export class ChainlinkResolutionAdapter
   }
 
   async closePrice(round: RoundWindow): Promise<ResolutionPriceEvent | null> {
-    const latest = this.latest();
-    if (!latest) return null;
+    const closingAnchor = this.findClosingAnchor(round);
+    if (!closingAnchor) return null;
+
     return {
-      ...latest,
-      id: `${latest.id}-close-${round.slug}`,
+      ...closingAnchor,
+      id: `${closingAnchor.id}-close-${round.slug}`,
       kind: "close",
       round,
     };
@@ -397,6 +398,25 @@ export class ChainlinkResolutionAdapter
         const updatedAt = event.chainUpdatedAtMs ?? event.clock.sourceTimestampMs;
         if (updatedAt === null || updatedAt === undefined) return false;
         if (updatedAt > round.startTimeMs) return false;
+        return event.quality === "live" && event.stalenessStatus !== "stale" && event.stalenessStatus !== "missing" && event.stalenessStatus !== "degraded";
+      })
+      .sort((a, b) => {
+        const aUpdatedAt = a.chainUpdatedAtMs ?? a.clock.sourceTimestampMs ?? 0;
+        const bUpdatedAt = b.chainUpdatedAtMs ?? b.clock.sourceTimestampMs ?? 0;
+        return bUpdatedAt - aUpdatedAt;
+      })[0] ?? null;
+  }
+
+  private findClosingAnchor(round: RoundWindow): ResolutionPriceEvent | null {
+    const candidates = [...this.observedEvents];
+    const latest = this.latest();
+    if (latest) candidates.push(latest);
+
+    return candidates
+      .filter((event) => {
+        const updatedAt = event.chainUpdatedAtMs ?? event.clock.sourceTimestampMs;
+        if (updatedAt === null || updatedAt === undefined) return false;
+        if (updatedAt > round.endTimeMs) return false;
         return event.quality === "live" && event.stalenessStatus !== "stale" && event.stalenessStatus !== "missing" && event.stalenessStatus !== "degraded";
       })
       .sort((a, b) => {

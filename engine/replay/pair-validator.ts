@@ -73,7 +73,9 @@ export async function validatePair(
           if (event.type === "chainlink_resolution") {
             const chainTs = event.chainUpdatedAtMs ?? event.sourceTimestamp;
             if (event.kind === "close") {
-              chainlinkCloseTruthSeen = true;
+              if (slotEndTime && chainTs <= slotEndTime && typeof event.price === "number" && event.roundId) {
+                chainlinkCloseTruthSeen = true;
+              }
             } else if (slotEndTime && chainTs >= slotEndTime && (event.quality === "resolved" || event.quality === "settled" || event.status === "closed")) {
               chainlinkCloseTruthSeen = true;
             }
