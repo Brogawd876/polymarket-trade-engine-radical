@@ -25,6 +25,7 @@ export type TelemetryEvent = {
   | { type: "SESSION_PNL"; payload: { pnl: number; loss: number } }
   | { type: "REPLAY_PROGRESS"; payload: { totalEvents: number; processedEvents: number; isDone: boolean; virtualTimeMs: number } }
   | { type: "DECISION_FEATURE_SNAPSHOT"; payload: DecisionFeatureSnapshot }
+  | { type: "INVALID_RUN"; payload: { reason: string } }
 );
 
 export interface TelemetrySink {

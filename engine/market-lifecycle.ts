@@ -18,6 +18,7 @@ import type { MaintenanceTracker } from "../utils/maintenance.ts";
 import type { UserChannel } from "./user-channel.ts";
 import {
   type ResolutionSourceAdapter,
+  type ResolutionPriceEvent,
   type VenueDataAdapter,
   type PredictiveFeedAdapter,
   type PredictiveSignalAggregator,
@@ -145,6 +146,8 @@ export class MarketLifecycle {
 
   private _feeRate = 0;
   private _pendingOrders: PendingOrder[] = [];
+  private _heartbeatTimer?: any;
+  private _itode = false;
   private _orderHistory: CompletedOrder[] = [];
   private _buyBlocked = false;
   private _sellBlocked = false;
@@ -160,6 +163,7 @@ export class MarketLifecycle {
   private _cancelingOrderIds = new Set<string>();
   private _lastLiveCancelGateLogMs = Number.NEGATIVE_INFINITY;
   private _isInvalid = false;
+  private _latchedAnchor: ResolutionPriceEvent | null = null;
 
   readonly slug: string;
   private readonly apiQueue: APIQueue;
@@ -331,6 +335,7 @@ export class MarketLifecycle {
   }
 
   destroy(): void {
+    if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
     if (this._orderHistory.length > 0 || this._alwaysLog) {
       this._marketLogger.endSlot(this.slug);
     }
@@ -483,6 +488,22 @@ export class MarketLifecycle {
       this._clobTokenIds = metadata.clobTokenIds;
       this._feeRate = metadata.feeRateBps;
 
+      // Polymarket research: Detect Taker Order Delay (250ms hold)
+      try {
+        const market = await (this.client as any).clob.getMarket(
+          metadata.conditionId,
+        );
+        this._itode = !!market?.itode;
+        if (this._itode) {
+          this._log(
+            `[${this.slug}] Taker Order Delay (itode) detected: 250ms order lock active`,
+            "yellow",
+          );
+        }
+      } catch {
+        // Fallback or non-clob client
+      }
+
       this._orderBook.subscribe(metadata.clobTokenIds);
     })();
 
@@ -617,6 +638,16 @@ export class MarketLifecycle {
       this._strategyName,
     );
 
+    // Polymarket research: Start heartbeat loop (every 7 seconds)
+    if (this._liveMode) {
+      this._heartbeatTimer = setInterval(
+        () => {
+          void this.client.sendHeartbeat();
+        },
+        7000,
+      );
+    }
+
     const self = this;
     const ctx: StrategyContext = {
       slug: this.slug,
@@ -662,7 +693,15 @@ export class MarketLifecycle {
         return this.apiQueue.marketResult.get(slot.startTime);
       },
       getAvailableShares: (tokenId: string) => this._tracker.availableShares(tokenId),
-      resolution: this._resolution,
+      resolution: this._resolution ? new Proxy(this._resolution, {
+        get: (target, prop, receiver) => {
+          if (prop === "latestAnchor") {
+            return () => this._latchedAnchor || target.latestAnchor();
+          }
+          const val = Reflect.get(target, prop, receiver);
+          return typeof val === "function" ? val.bind(target) : val;
+        }
+      }) : undefined,
       venue: this._venue,
       predictive: {
         binance: this._binance,
@@ -844,15 +883,18 @@ export class MarketLifecycle {
         buys = [];
       }
 
-      const maxActiveBuys = parseEnvInt("LIVE_MAX_ACTIVE_BUYS", 1);
-      const activeBuys = this._pendingOrders.filter((o) => o.action === "buy").length;
-      const slots = Math.max(0, maxActiveBuys - activeBuys);
-      if (buys.length > slots) {
-        for (const item of buys.slice(slots)) {
-          item.onFailed?.("live active buy limit reached");
+      const maxActiveBuysPerSide = parseEnvInt("LIVE_MAX_ACTIVE_BUYS_PER_SIDE", 1);
+      const filteredBuys: OrderRequest[] = [];
+      for (const item of buys) {
+        const activeBuysThisSide = this._pendingOrders.filter((o) => o.action === "buy" && o.tokenId === item.req.tokenId).length;
+        const placingBuysThisSide = filteredBuys.filter((o) => o.req.tokenId === item.req.tokenId).length;
+        if (activeBuysThisSide + placingBuysThisSide < maxActiveBuysPerSide) {
+          filteredBuys.push(item);
+        } else {
+          item.onFailed?.("live active buy limit reached for side");
         }
-        buys = buys.slice(0, slots);
       }
+      buys = filteredBuys;
     }
 
     const maxRetries = this._liveMode
@@ -874,8 +916,6 @@ export class MarketLifecycle {
     const cancellable = orderIds.filter(
       (id) => !this._userChannel.isMatched(id),
     );
-    // untrack order to avoid "CANCELLATION" event in processOrderEvent
-    for (const id of cancellable) this._userChannel.untrackOrder(id);
 
     for (const id of cancellable) this._cancelingOrderIds.add(id);
     try {
@@ -883,6 +923,7 @@ export class MarketLifecycle {
       const canceled = response?.canceled || [];
       const notCanceled = response?.not_canceled || {};
       for (const id of canceled) {
+        this._userChannel.untrackOrder(id);
         const pending = this._pendingOrders.find((o) => o.orderId === id);
         if (pending) {
           this._trackerUnlock(pending);
@@ -1353,6 +1394,11 @@ export class MarketLifecycle {
               this._commitFill(pending, net, fee);
             },
             onFailed: (reason) => {
+              // Suppress async channel "cancelled" events for orders we are actively cancelling.
+              // `_cancelOrders` handles untracking, unlocking, and callbacks.
+              if (this._cancelingOrderIds.has(orderId) && reason.toLowerCase() === "cancelled") {
+                return;
+              }
               const pending = this._pendingOrders.find(
                 (o) => o.orderId === orderId,
               );

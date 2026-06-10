@@ -26,5 +26,14 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "exclude": ["analysis", "ui", "test", "scripts/archive"]
+  "exclude": [
+    "analysis",
+    "ui",
+    "test",
+    "scripts/archive",
+    "AI_WORKSPACE/**",
+    "**/*_PACKET/**",
+    "**/*AUDIT_PACKET/**",
+    "**/*SESSION_RESEARCH_PACKET/**"
+  ]
 }

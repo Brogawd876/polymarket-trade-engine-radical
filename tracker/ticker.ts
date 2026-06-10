@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { Env } from "../utils/config";
 import {
   createReconnectingWs,
@@ -16,13 +17,16 @@ const KILLSWITCH_THRESHOLD = 50.0;
 // Whale dump: Coinbase diverges from Binance by more than 0.15%
 const WHALE_DUMP_THRESHOLD_PCT = 0.0015;
 
-export class TickerTracker {
+export class TickerTracker extends EventEmitter {
   private polymarketWs?: ReconnectingWs;
   private binanceWs?: ReconnectingWs;
   private coinbaseWs?: ReconnectingWs;
   private okxWs?: ReconnectingWs;
   private bybitWs?: ReconnectingWs;
   private polymarketValue?: number;
+  private polymarketLagMs: number | null = null;
+  private polymarketStale = false;
+  private polymarketLastUpdateMs = 0;
   private binanceValue?: number;
   private coinbaseValue?: number;
   private okxValue?: number;
@@ -64,6 +68,10 @@ export class TickerTracker {
       Math.abs(this.coinbaseValue - this.binanceValue) >
       this.binanceValue * WHALE_DUMP_THRESHOLD_PCT
     );
+  }
+
+  get isPolymarketStale(): boolean {
+    return this.polymarketStale;
   }
 
   get divergence(): number | null {
@@ -146,6 +154,7 @@ export class TickerTracker {
         }
 
         this.binanceValue = price;
+        this.emit("update");
       },
       onerror: (err) => console.error("Binance WS error:", err),
     });
@@ -204,13 +213,16 @@ export class TickerTracker {
         const price: number = json.payload?.value;
         if (!price) return;
 
-        if (!this.validated) {
-          this.validated = true;
-          const eventTime: number = json.timestamp; // top-level timestamp ms
-          if (eventTime) {
-            const lagMs = Date.now() - eventTime;
-            if (lagMs > MAX_STALENESS_MS) {
-              const lagSec = Math.round(lagMs / 1000);
+        const eventTime: number = json.timestamp; // top-level timestamp ms
+        if (eventTime) {
+          this.polymarketLagMs = Date.now() - eventTime;
+          this.polymarketStale = this.polymarketLagMs > MAX_STALENESS_MS;
+          this.polymarketLastUpdateMs = Date.now();
+
+          if (!this.validated) {
+            this.validated = true;
+            if (this.polymarketStale) {
+              const lagSec = Math.round(this.polymarketLagMs / 1000);
               console.error(
                 `[Price Feed] Polymarket price feed is stale: event is ${lagSec}s behind current time (max allowed: ${MAX_STALENESS_MS / 1000}s). Exiting.`,
               );
@@ -220,6 +232,7 @@ export class TickerTracker {
         }
 
         this.polymarketValue = price;
+        this.emit("update");
       },
       // Polymarket WS error: {"isTrusted":true}
       onerror: (err) =>

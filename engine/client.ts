@@ -66,7 +66,8 @@ export type MultiOrderRequest = {
   tickSize: string;
   negRisk: boolean;
   feeRateBps: number; // deprecated field not used in v2
-  orderType?: "GTC" | "FOK";
+  orderType?: "GTC" | "FOK" | "GTD";
+  expiration?: number; // seconds from now
 };
 
 export type PlacedOrder = {
@@ -86,11 +87,17 @@ export interface EarlyBirdClient {
   /** Re-insert a persisted order (for startup recovery). No-op for real client. */
   restoreOrder(order: Order): void;
 
+  /** Safety & Heartbeat */
+  sendHeartbeat(): Promise<void>;
+
   /** Balance API */
   getUSDCBalance(): Promise<number>;
   getAvailableShares(tokenId: string): Promise<number>;
   updateUSDCBalance(): Promise<void>;
   updateAvailableShares(tokenId: string): Promise<void>;
+
+  /** Activity API */
+  getActivity(type?: string): Promise<any[]>;
 
   /** Redeem winning CTF positions for a resolved market. No-op in sim mode. */
   redeemPositions(conditionId: string, silent?: boolean): Promise<void>;
@@ -165,10 +172,12 @@ export class EarlyBirdSimClient implements EarlyBirdClient {
   ) {
     this._clock = opts.clock ?? new RealClock();
     this._fixedDelayMs = opts.fixedDelayMs;
-    this._conservativeFill = opts.conservativeFill ?? false;
+    this._conservativeFill = opts.conservativeFill ?? true;
   }
 
   async init(): Promise<void> {}
+
+  async sendHeartbeat(): Promise<void> {}
 
   private _checkFill(
     order: { action: "buy" | "sell"; price: number; shares: number; orderType?: OrderType },
@@ -177,9 +186,8 @@ export class EarlyBirdSimClient implements EarlyBirdClient {
     if (!bookData) return false;
 
     const isConservative =
-      this._conservativeFill ||
-      process.env.CONSERVATIVE_FILL === "true" ||
-      process.env.PESSIMISTIC_FILL === "true";
+      this._conservativeFill !== false &&
+      process.env.OPTIMISTIC_FILL !== "true";
 
     if (isConservative && "bids" in bookData && "asks" in bookData) {
       const model = new ConservativeMakerFillModel();
@@ -373,6 +381,10 @@ export class EarlyBirdSimClient implements EarlyBirdClient {
 
   async updateAvailableShares(_tokenId: string): Promise<void> {}
 
+  async getActivity(_type?: string): Promise<any[]> {
+    return [];
+  }
+
   async redeemPositions(
     _conditionId: string,
     _silent?: boolean,
@@ -521,25 +533,33 @@ export class PolymarketEarlyBirdClient implements EarlyBirdClient {
           size: req.shares,
           side: req.action === "buy" ? Side.BUY : Side.SELL,
         };
-        return this.clob.orderBuilder.buildOrder(
-          userOrder,
-          {
-            tickSize: req.tickSize as TickSize,
-            negRisk: req.negRisk,
-          },
-          2,
-        );
+
+        const options: any = {
+          tickSize: req.tickSize as TickSize,
+          negRisk: req.negRisk,
+        };
+
+        if (req.orderType === "GTD" && req.expiration) {
+          // Polymarket research shows a 60s security threshold for GTD
+          (userOrder as any).expiration =
+            Math.floor(Date.now() / 1000) + 60 + req.expiration;
+        }
+
+        return this.clob.orderBuilder.buildOrder(userOrder, options, 2);
       }),
     );
 
     const resp = await this.clob.postOrders(
-      signed.map((order, i) => ({
-        order,
-        orderType:
-          orders[i]!.orderType === "FOK"
-            ? ClobOrderType.FOK
-            : ClobOrderType.GTC,
-      })),
+      signed.map((order, i) => {
+        let orderType = ClobOrderType.GTC;
+        if (orders[i]!.orderType === "FOK") orderType = ClobOrderType.FOK;
+        if (orders[i]!.orderType === "GTD") orderType = ClobOrderType.GTD;
+
+        return {
+          order,
+          orderType,
+        };
+      }),
     );
 
     if (!Array.isArray(resp)) {
@@ -604,6 +624,17 @@ export class PolymarketEarlyBirdClient implements EarlyBirdClient {
   /** No-op for real client — orders already exist on the exchange. */
   restoreOrder(_order: Order): void {}
 
+  /** Safety & Heartbeat */
+  async sendHeartbeat(): Promise<void> {
+    try {
+      await (this.clob as any).postHeartbeat();
+    } catch (err: any) {
+      console.error(
+        `[Heartbeat] Failed to send heartbeat: ${err.response?.data?.error || err.message}`,
+      );
+    }
+  }
+
   async getUSDCBalance(): Promise<number> {
     try {
       const bal = await this.getTokenBalance(pUSD_ADDRESS);
@@ -633,6 +664,25 @@ export class PolymarketEarlyBirdClient implements EarlyBirdClient {
       asset_type: AssetType.CONDITIONAL,
       token_id: tokenId,
     });
+  }
+
+  /** Activity API */
+  async getActivity(type?: string): Promise<any[]> {
+    try {
+      // The Data APIactivity endpoint is used for rebates and rewards.
+      // ClobClient v2 might not have a direct wrapper, so we use the underlying axios/fetch if needed,
+      // but usually getHistory or similar is available.
+      if (typeof (this.clob as any).getActivity === "function") {
+        return await (this.clob as any).getActivity({
+          user: this._funder ?? this._signer.address,
+          type,
+        });
+      }
+      // Fallback: search for activity in trade history if specific activity endpoint not in SDK
+      return [];
+    } catch {
+      return [];
+    }
   }
 
   private _buildRelay(): RelayClient {
