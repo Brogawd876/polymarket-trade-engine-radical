@@ -9,6 +9,18 @@ import { EarlyBird } from "../../engine/early-bird.ts";
 import { SessionManager } from "../../engine/session-manager.ts";
 
 describe("Session Lifecycle Integration", () => {
+  test("SessionManager rejects prod through the simulation entrypoint", async () => {
+    const sessionManager = new SessionManager(new TelemetryBus());
+
+    await expect(
+      sessionManager.startSimulation({
+        strategy: "simulation",
+        rounds: 1,
+        prod: true,
+      }),
+    ).rejects.toThrow(/live exchange submission is disabled/);
+    expect(sessionManager.getStatus().sessionState).toBe("idle");
+  });
   
   test("Start -> Monitor -> Stop (Clean Flow)", async () => {
     const bus = new TelemetryBus();
@@ -117,7 +129,7 @@ describe("Session Lifecycle Integration", () => {
     expect(sessionManager.getStatus().blockReason).toBeNull();
   });
 
-  test("Replay session completes a one-round fixture without stalling", async () => {
+  test("Replay session rejects a fixture with no settlement evidence", async () => {
     const bus = new TelemetryBus();
     const sessionManager = new SessionManager(bus);
     const fixture = join(import.meta.dir, "..", "fixtures", "replay", "filled-order.log");
@@ -135,9 +147,10 @@ describe("Session Lifecycle Integration", () => {
     }
 
     const finalStatus = sessionManager.getStatus();
-    expect(finalStatus.sessionState).not.toBe("failed");
-    expect(finalStatus.blockReason).toBeNull();
-    expect(["completed", "idle"]).toContain(finalStatus.sessionState);
+    expect(finalStatus.sessionState).toBe("failed");
+    expect(finalStatus.blockReason).toContain(
+      "replay ended without explicit settlement evidence",
+    );
   }, 10000);
 
   test("Replay session honors explicit strategy selection", async () => {

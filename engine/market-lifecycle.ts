@@ -26,6 +26,7 @@ import {
   type OrderFlowMonitor,
   type QuantMonitor,
   type RoundWindow,
+  type PlaceOrderIntent,
   PolymarketVenueAdapter,
   AggregatedRiskGate,
   DEFAULT_SIMULATION_RISK_LIMITS,
@@ -46,6 +47,10 @@ import { createDecisionFeatureSnapshot } from "./decision-features.ts";
 
 import type { EventWriter } from "./event-store/writer.ts";
 import type { ProfitEventPayload, ProfitEventType } from "./event-store/events.ts";
+import {
+  TradingKernel,
+  type IntentState,
+} from "./trading-kernel.ts";
 
 const DEFAULT_FEED_READINESS_TIMEOUT_MS = 5000;
 const DEFAULT_FEED_READINESS_POLL_MS = 100;
@@ -62,7 +67,7 @@ export type PendingOrder = {
   orderId: string;
   tokenId: string;
   action: "buy" | "sell";
-  orderType?: "GTC" | "FOK";
+  orderType?: "GTC" | "FAK" | "FOK";
   intentId?: string;
   price: number;
   shares: number;
@@ -93,6 +98,11 @@ type RecoveryOptions = {
   clobTokenIds: [string, string];
   pendingOrders: PendingOrder[];
   orderHistory: CompletedOrder[];
+};
+
+type IntentRegistration = {
+  intent: StrategyIntent;
+  persisted: Promise<void>;
 };
 
 type MarketLifecycleOptions = {
@@ -128,6 +138,7 @@ type MarketLifecycleOptions = {
   telemetry?: TelemetrySink;
   eventWriter?: EventWriter;
   liveMode?: boolean;
+  tradingKernel?: TradingKernel;
 };
 
 export class MarketLifecycle {
@@ -164,6 +175,7 @@ export class MarketLifecycle {
   private _lastLiveCancelGateLogMs = Number.NEGATIVE_INFINITY;
   private _isInvalid = false;
   private _latchedAnchor: ResolutionPriceEvent | null = null;
+  private _intentRegistrations = new WeakMap<OrderRequest, IntentRegistration>();
 
   readonly slug: string;
   private readonly apiQueue: APIQueue;
@@ -187,6 +199,7 @@ export class MarketLifecycle {
   private readonly _venue: VenueDataAdapter;
   private readonly _riskGate: RiskGate;
   private readonly _liveMode: boolean;
+  private readonly _tradingKernel: TradingKernel;
   private readonly _feedReadinessTimeoutMs: number;
   private readonly _feedReadinessPollMs: number;
 
@@ -207,6 +220,11 @@ export class MarketLifecycle {
     this._telemetry = opts.telemetry ?? new NullTelemetrySink();
     this._eventWriter = opts.eventWriter;
     this._liveMode = opts.liveMode ?? false;
+    this._tradingKernel =
+      opts.tradingKernel ??
+      new TradingKernel(this._liveMode ? "micro-live" : "paper", () =>
+        this._clock.nowMs(),
+      );
     this._orderBook = opts.orderBook ?? new OrderBook(this._clock);
     this._userChannel = opts.userChannel;
     this._resolution = opts.resolution;
@@ -241,6 +259,8 @@ export class MarketLifecycle {
     const recovery = opts.recovery;
     if (recovery) {
       this._state = recovery.state;
+      this._conditionId = recovery.conditionId;
+      this._userChannelConditionId = recovery.conditionId;
       this._clobTokenIds = recovery.clobTokenIds;
       this._pendingOrders = recovery.pendingOrders;
       this._orderHistory = recovery.orderHistory;
@@ -251,6 +271,20 @@ export class MarketLifecycle {
       // track pending orders for user channel
       for (const pending of this._pendingOrders) {
         const orderId = pending.orderId;
+        if (
+          pending.intentId &&
+          !this._tradingKernel.intentState(pending.intentId)
+        ) {
+          this._tradingKernel.restoreIntent(
+            {
+              ...this._createSyntheticIntent(pending, pending.intentId),
+              createdAtMs: pending.placedAtMs,
+              expireAtMs: pending.expireAtMs,
+              reason: "recovered acknowledged order",
+            },
+            "acknowledged",
+          );
+        }
         this._userChannel.trackOrder(orderId, {
           req: {
             tokenId: pending.tokenId,
@@ -275,6 +309,9 @@ export class MarketLifecycle {
   }
   get pnl(): number {
     return this._pnl;
+  }
+  get isInvalid(): boolean {
+    return this._isInvalid;
   }
   get clobTokenIds(): [string, string] | null {
     return this._clobTokenIds;
@@ -490,7 +527,7 @@ export class MarketLifecycle {
 
       // Polymarket research: Detect Taker Order Delay (250ms hold)
       try {
-        const market = await (this.client as any).clob.getMarket(
+        const market = await this.client.getMarketStatus(
           metadata.conditionId,
         );
         this._itode = !!market?.itode;
@@ -651,7 +688,11 @@ export class MarketLifecycle {
     if (this._liveMode) {
       this._heartbeatTimer = setInterval(
         () => {
-          void this.client.sendHeartbeat();
+          void this.client.sendHeartbeat().catch((error) => {
+            this._triggerFatalError(
+              new Error(`CLOB heartbeat failure: ${String(error)}`),
+            );
+          });
         },
         7000,
       );
@@ -740,6 +781,14 @@ export class MarketLifecycle {
    * Transitions to STOPPING when the slot ends or all orders drain.
    */
   private async _handleRunning(): Promise<void> {
+    if (this._liveMode && !this._userChannel.isReady()) {
+      this._triggerFatalError(
+        new Error(
+          "authenticated user channel unavailable; REST reconciliation is required",
+        ),
+      );
+      return;
+    }
     if (this._clock.nowMs() >= this.slotEndMs) {
       this._setState("STOPPING");
       this._log(
@@ -787,17 +836,24 @@ export class MarketLifecycle {
         const response = await this._cancelOrders(
           pendingSells.map((o) => o.orderId),
         );
-        // Force-remove any not_canceled (slot is over, nothing we can do)
-        for (const id of Object.keys(response.not_canceled)) {
-          this._removePendingOrder(id);
+        const unresolvedIds = Object.keys(response.not_canceled);
+        if (unresolvedIds.length > 0) {
+          this._log(
+            `[${this.slug}] Shutdown remains blocked: ${unresolvedIds.length} order(s) were not confirmed canceled`,
+            "red",
+          );
+          return;
         }
       }
       
       const isResolved = this._checkResolutionSync();
       if (!isResolved) return; // Wait for next tick
 
-      this._computePnl();
-      await this._autoRedeem();
+      const settlement = this._computePnl();
+      if (!(await this._autoRedeem())) return;
+      if (settlement) {
+        this._tracker.onResolution(settlement.held, settlement.payout);
+      }
       this._setState("DONE");
       return;
     }
@@ -809,10 +865,16 @@ export class MarketLifecycle {
       if (this._hasUnfilledPositions()) {
         const isResolved = this._checkResolutionSync();
         if (!isResolved) return; // Wait for next tick
-        this._computePnl();
-        await this._autoRedeem();
+        const settlement = this._computePnl();
+        if (!(await this._autoRedeem())) return;
+        if (settlement) {
+          this._tracker.onResolution(settlement.held, settlement.payout);
+        }
       } else {
-        this._computePnl();
+        const settlement = this._computePnl();
+        if (settlement) {
+          this._tracker.onResolution(settlement.held, settlement.payout);
+        }
       }
       this._setState("DONE");
     }
@@ -830,13 +892,9 @@ export class MarketLifecycle {
       // Cancelling here would race against the in-flight settlement — the
       // trade would be dropped and onFilled never fires.
       if (this._userChannel.isMatched(pending.orderId)) continue;
-      // Read partial fill from channel BEFORE cancel (order still tracked here).
-      const partialShares = this._userChannel.getMatchedSoFar(pending.orderId);
       // _cancelOrders untracks from channel BEFORE the API call (race-safe).
       await this._cancelOrders([pending.orderId], "expired");
-      if (partialShares > 0) {
-        this._commitFill(pending, partialShares, 0, "partial_filled");
-      } else if (pending.onExpired) {
+      if (pending.onExpired) {
         this._marketLogger.log(this._createOrderEntry(pending, "expired"));
         void pending.onExpired();
       }
@@ -847,6 +905,81 @@ export class MarketLifecycle {
   // Strategy-facing order APIs
   // ---------------------------------------------------------------------------
 
+  private _registerOrderIntent(item: OrderRequest): IntentRegistration {
+    const existing = this._intentRegistrations.get(item);
+    if (existing) return existing;
+
+    const intent = this._createOrderIntent(item);
+    this._tradingKernel.recordIntent(intent);
+    this._telemetry.push({
+      ts: this._clock.nowMs(),
+      type: "ORDER_INTENT",
+      payload: {
+        slug: this.slug,
+        intent,
+      },
+    });
+
+    const persisted = this._eventWriter
+      ? this._eventWriter
+          .append({
+            eventType: "order_intent",
+            source: "market-lifecycle",
+            slug: this.slug,
+            roundId: this.slug,
+            strategyId: this._strategyName,
+            eventId: `order_intent-${intent.id}`,
+            receivedTsMs: this._clock.nowMs(),
+            processedTsMs: this._clock.nowMs(),
+            payload: {
+              intentId: intent.id,
+              tokenId: item.req.tokenId,
+              side: this._side(item.req.tokenId),
+              action: item.req.action,
+              price: item.req.price,
+              shares: item.req.shares,
+              orderType: item.req.orderType,
+            },
+          })
+          .then(() => undefined)
+      : Promise.resolve();
+
+    const registration = { intent, persisted };
+    this._intentRegistrations.set(item, registration);
+    return registration;
+  }
+
+  private _transitionIntent(
+    item: OrderRequest,
+    nextState: IntentState,
+    reason?: string,
+  ): StrategyIntent {
+    const registration = this._registerOrderIntent(item);
+    this._tradingKernel.transitionIntent(
+      registration.intent.id,
+      nextState,
+      reason,
+    );
+    return registration.intent;
+  }
+
+  private _rejectOrderRequest(
+    item: OrderRequest,
+    reason: string,
+    state: Extract<IntentState, "blocked" | "failed" | "expired"> = "failed",
+  ): void {
+    const intent = this._transitionIntent(item, state, reason);
+    const status = state === "expired" ? "expired" : "failed";
+    this._marketLogger.log(
+      this._createOrderEntry(item.req, status, { reason }),
+    );
+    this._emitOrderLifecycle(item.req, status, {
+      intentId: intent.id,
+      error: reason,
+    });
+    item.onFailed?.(reason);
+  }
+
   /**
    * Fire-and-forget order placement. Returns immediately — do NOT await the
    * result to know if an order was placed. Use `onFilled` to react to a fill
@@ -854,6 +987,8 @@ export class MarketLifecycle {
    * Buys retry up to BUY_MAX_RETRIES times on balance errors; sells retry until slot end.
    */
   private _postOrders(requests: OrderRequest[]): void {
+    for (const item of requests) this._registerOrderIntent(item);
+
     const maintenance = this._maintenance?.isActive(this._clock.nowMs());
     if (maintenance?.active) {
       const reason = `Polymarket matching engine maintenance: ${maintenance.reason ?? "active"}`;
@@ -862,21 +997,26 @@ export class MarketLifecycle {
         "yellow",
       );
       for (const item of requests) {
-        this._marketLogger.log(
-          this._createOrderEntry(item.req, "failed", { reason }),
-        );
-        this._emitOrderLifecycle(item.req, "failed", { error: reason });
-        item.onFailed?.(reason);
+        this._rejectOrderRequest(item, reason, "blocked");
       }
       return;
     }
 
-    let buys = requests.filter(
-      (o) => o.req.action === "buy" && !this._buyBlocked,
-    );
-    const sells = requests.filter(
-      (o) => o.req.action === "sell" && !this._sellBlocked,
-    );
+    let buys: OrderRequest[] = [];
+    const sells: OrderRequest[] = [];
+    for (const item of requests) {
+      if (item.req.action === "buy") {
+        if (this._buyBlocked) {
+          this._rejectOrderRequest(item, "buy placement is blocked", "blocked");
+        } else {
+          buys.push(item);
+        }
+      } else if (this._sellBlocked) {
+        this._rejectOrderRequest(item, "sell placement is blocked", "blocked");
+      } else {
+        sells.push(item);
+      }
+    }
 
     if (this._liveMode && buys.length > 0) {
       const now = this._clock.nowMs();
@@ -888,7 +1028,9 @@ export class MarketLifecycle {
           );
           this._lastLiveCancelGateLogMs = now;
         }
-        for (const item of buys) item.onFailed?.("cancel in flight");
+        for (const item of buys) {
+          this._rejectOrderRequest(item, "cancel in flight", "blocked");
+        }
         buys = [];
       }
 
@@ -900,7 +1042,11 @@ export class MarketLifecycle {
         if (activeBuysThisSide + placingBuysThisSide < maxActiveBuysPerSide) {
           filteredBuys.push(item);
         } else {
-          item.onFailed?.("live active buy limit reached for side");
+          this._rejectOrderRequest(
+            item,
+            "live active buy limit reached for side",
+            "blocked",
+          );
         }
       }
       buys = filteredBuys;
@@ -935,6 +1081,13 @@ export class MarketLifecycle {
         this._userChannel.untrackOrder(id);
         const pending = this._pendingOrders.find((o) => o.orderId === id);
         if (pending) {
+          if (pending.intentId) {
+            this._tradingKernel.transitionIntent(
+              pending.intentId,
+              status === "expired" ? "expired" : "canceled",
+              status,
+            );
+          }
           this._trackerUnlock(pending);
           this._marketLogger.log(this._createOrderEntry(pending, status));
           this._emitOrderLifecycle(pending, status, {
@@ -1050,15 +1203,20 @@ export class MarketLifecycle {
   // Internal helpers
   // ---------------------------------------------------------------------------
 
-  /**
-   * Commit a fill: update tracker, record in history, remove from pending, log, fire callback.
-   */
+  /** Commit one mined fill while retaining any live GTC remainder. */
   private _commitFill(
     pending: PendingOrder,
     shares: number,
     fee: number,
     status: "filled" | "partial_filled" = "filled",
   ): void {
+    if (shares <= 0 || shares > pending.shares + 1e-9) {
+      throw new Error(
+        `fill invariant violation for ${pending.orderId}: fill=${shares}, remaining=${pending.shares}`,
+      );
+    }
+    const remainingShares = Math.max(0, pending.shares - shares);
+    const isComplete = remainingShares <= 1e-9;
     if (pending.action === "buy") {
       this._tracker.onBuyFilled(
         pending.orderId,
@@ -1081,16 +1239,29 @@ export class MarketLifecycle {
       fee,
       tokenId: pending.tokenId,
     });
-    this._removePendingOrder(pending.orderId);
+    if (isComplete) {
+      this._removePendingOrder(pending.orderId);
+    } else {
+      pending.shares = remainingShares;
+    }
     this._marketLogger.log(
       this._createOrderEntry(pending, "filled", { shares }),
     );
     
-    this._emitOrderLifecycle(pending, status, {
+    const actualStatus = isComplete ? "filled" : "partial_filled";
+    this._emitOrderLifecycle(pending, actualStatus, {
       orderId: pending.orderId,
       intentId: pending.intentId,
       shares,
+      remainingShares,
     });
+    if (isComplete && pending.intentId) {
+      this._tradingKernel.transitionIntent(
+        pending.intentId,
+        "filled",
+        `filled ${shares} shares`,
+      );
+    }
 
     if (pending.onFilled) pending.onFilled(shares);
   }
@@ -1108,17 +1279,36 @@ export class MarketLifecycle {
     (async () => {
       let remaining = [...items];
       let retryCount = 0;
+
+      const durablyRecorded: OrderRequest[] = [];
+      for (const item of remaining) {
+        const registration = this._registerOrderIntent(item);
+        try {
+          await registration.persisted;
+          durablyRecorded.push(item);
+        } catch (error) {
+          const reason = `order intent journal failed: ${error}`;
+          this._log(`[${this.slug}] ${reason}`, "red");
+          this._rejectOrderRequest(item, reason, "failed");
+        }
+      }
+      remaining = durablyRecorded;
+
       while (remaining.length > 0) {
-        const intents = new Map<OrderRequest, StrategyIntent>();
         // Stop retrying if the relevant block flag was set after this loop started
+        const unblocked: OrderRequest[] = [];
+        for (const item of remaining) {
+          if (item.req.action === "buy" && this._buyBlocked) {
+            this._rejectOrderRequest(item, "buy placement became blocked", "blocked");
+          } else if (item.req.action === "sell" && this._sellBlocked) {
+            this._rejectOrderRequest(item, "sell placement became blocked", "blocked");
+          } else {
+            unblocked.push(item);
+          }
+        }
         const beforeBlock = remaining.length;
-        remaining = remaining.filter((item) => {
-          if (item.req.action === "buy" && this._buyBlocked) return false;
-          if (item.req.action === "sell" && this._sellBlocked) return false;
-          return true;
-        });
+        remaining = unblocked;
         if (remaining.length === 0) {
-          // log if blocked, take 0 item assuming all item kinds are same from postOrder
           if (beforeBlock > 0) {
             const kind = items[0]!.req.action === "buy" ? "buy" : "sell";
             this._log(
@@ -1132,10 +1322,11 @@ export class MarketLifecycle {
         // Pre-flight: drop orders past their expiry
         remaining = remaining.filter((item) => {
           if (this._clock.nowMs() >= item.expireAtMs) {
-            this._emitOrderLifecycle(item.req, "expired", {
-              error: "order expired before placement",
-            });
-            if (item.onFailed) item.onFailed("order expired before placement");
+            this._rejectOrderRequest(
+              item,
+              "order expired before placement",
+              "expired",
+            );
             return false;
           }
           return true;
@@ -1143,26 +1334,7 @@ export class MarketLifecycle {
         if (remaining.length === 0) break;
 
         remaining = remaining.filter((item) => {
-          const intent = this._createOrderIntent(item);
-          intents.set(item, intent);
-
-          this._telemetry.push({
-            ts: this._clock.nowMs(),
-            type: "ORDER_INTENT",
-            payload: {
-              slug: this.slug,
-              intent,
-            },
-          });
-          this._appendEvent("order_intent", "market-lifecycle", {
-            intentId: intent.id,
-            tokenId: item.req.tokenId,
-            side: this._side(item.req.tokenId),
-            action: item.req.action,
-            price: item.req.price,
-            shares: item.req.shares,
-            orderType: item.req.orderType,
-          }, intent.id);
+          const intent = this._registerOrderIntent(item).intent;
 
           const decision = this._riskGate.evaluate(intent, this._createRiskSnapshot());
           
@@ -1189,7 +1361,10 @@ export class MarketLifecycle {
             decision,
           });
 
-          if (decision.approved) return true;
+          if (decision.approved) {
+            this._transitionIntent(item, "risk_approved");
+            return true;
+          }
 
           const reason = decision.reasons.join("; ");
           const side = this._side(item.req.tokenId);
@@ -1209,10 +1384,27 @@ export class MarketLifecycle {
           this._marketLogger.log(
             this._createOrderEntry(item.req, "failed", { reason }),
           );
+          this._tradingKernel.transitionIntent(intent.id, "blocked", reason);
+          this._emitOrderLifecycle(item.req, "failed", {
+            intentId: intent.id,
+            error: reason,
+          });
           item.onFailed?.(reason);
           return false;
         });
         if (remaining.length === 0) break;
+
+        const submissionDecision = this._tradingKernel.authorizeSubmission(
+          this._liveMode ? "exchange" : "simulated",
+        );
+        if (!submissionDecision.approved) {
+          const reason =
+            submissionDecision.reason ?? "submission authority denied";
+          for (const item of remaining) {
+            this._rejectOrderRequest(item, reason, "blocked");
+          }
+          break;
+        }
 
         // Pre-flight: skip network call for orders the tracker knows will fail
         const retryNext: typeof remaining = [];
@@ -1227,6 +1419,7 @@ export class MarketLifecycle {
               return true;
             } else {
               retryNext.push(item);
+              this._transitionIntent(item, "retry_pending", "not enough cash");
               return false;
             }
           } else {
@@ -1239,6 +1432,7 @@ export class MarketLifecycle {
               return true;
             } else {
               retryNext.push(item);
+              this._transitionIntent(item, "retry_pending", "not enough shares");
               return false;
             }
           }
@@ -1255,7 +1449,7 @@ export class MarketLifecycle {
           retryCount++;
           if (retryCount >= maxRetries) {
             for (const item of remaining) {
-              if (item.onFailed) item.onFailed("not enough balance");
+              this._rejectOrderRequest(item, "not enough balance", "failed");
             }
             break;
           }
@@ -1266,6 +1460,9 @@ export class MarketLifecycle {
         }
 
         // Lock funds/shares optimistically before async network call to prevent concurrent overspending
+        for (const item of remaining) {
+          this._transitionIntent(item, "submitting");
+        }
         const optimisticOrderIds = remaining.map(() => crypto.randomUUID());
         for (let i = 0; i < remaining.length; i++) {
           const item = remaining[i]!;
@@ -1279,14 +1476,32 @@ export class MarketLifecycle {
           }
         }
 
-        const placed = await this.client.postMultipleOrders(
-          remaining.map((r) => ({
-            ...r.req,
-            tickSize: this._orderBook.getTickSize(r.req.tokenId),
-            feeRateBps: this._orderBook.getFeeRate(r.req.tokenId),
-            negRisk: false,
-          })),
-        );
+        let placed: PlacedOrder[];
+        try {
+          placed = await this.client.postMultipleOrders(
+            remaining.map((r) => ({
+              ...r.req,
+              tickSize: this._orderBook.getTickSize(r.req.tokenId),
+              feeRateBps: this._orderBook.getFeeRate(r.req.tokenId),
+              negRisk: false,
+            })),
+          );
+        } catch (error) {
+          const reason = `order submission threw before acknowledgement: ${error}`;
+          for (let i = 0; i < remaining.length; i++) {
+            const item = remaining[i]!;
+            const tempId = optimisticOrderIds[i]!;
+            const side = this._side(item.req.tokenId);
+            const label = `[${this.slug}] ${item.req.action.toUpperCase()} ${side} @ ${item.req.price} (optimistic)`;
+            if (item.req.action === "buy") {
+              this._tracker.unlockBuy(tempId, label);
+            } else {
+              this._tracker.unlockSell(tempId, label);
+            }
+            this._rejectOrderRequest(item, reason, "failed");
+          }
+          break;
+        }
 
         for (let i = 0; i < placed.length; i++) {
           const p = placed[i];
@@ -1319,10 +1534,16 @@ export class MarketLifecycle {
                   item.req.shares = actualBalance / 1e6;
                 }
               }
+              this._transitionIntent(
+                item,
+                "retry_pending",
+                p.errorMsg,
+              );
               retryNext.push(item);
             } else {
               const reason = p?.errorMsg ?? "unknown";
-              const intent = intents.get(item);
+              const intent = this._registerOrderIntent(item).intent;
+              this._tradingKernel.transitionIntent(intent.id, "failed", reason);
               this._log(
                 `[${this.slug}] Order placement failed (${item.req.action.toUpperCase()} ${side} @ ${item.req.price}): ${reason}`,
                 "red",
@@ -1353,7 +1574,7 @@ export class MarketLifecycle {
             tokenId: item.req.tokenId,
             action: item.req.action,
             orderType: item.req.orderType,
-            intentId: intents.get(item)?.id,
+            intentId: this._registerOrderIntent(item).intent.id,
             price: item.req.price,
             shares: item.req.shares,
             expireAtMs: item.expireAtMs,
@@ -1366,11 +1587,12 @@ export class MarketLifecycle {
           
           this._emitOrderLifecycle(item.req, "placed", {
             orderId: p.orderId,
-            intentId: intents.get(item)?.id,
+            intentId: this._registerOrderIntent(item).intent.id,
           });
+          this._transitionIntent(item, "acknowledged", p.status);
           this._appendEvent("order_submitted", "market-lifecycle", {
             orderId: p.orderId,
-            intentId: intents.get(item)?.id,
+            intentId: this._registerOrderIntent(item).intent.id,
             tokenId: item.req.tokenId,
             side: this._side(item.req.tokenId),
             action: item.req.action,
@@ -1378,7 +1600,7 @@ export class MarketLifecycle {
             shares: item.req.shares,
             orderType: item.req.orderType ?? "GTC",
             status: p.status,
-          }, intents.get(item)?.id);
+          }, this._registerOrderIntent(item).intent.id);
 
           // Wrap the OrderRequest with fill accounting and register with the user channel.
           // The channel calls wrapped.onFilled when the order is fully settled on-chain.
@@ -1400,7 +1622,12 @@ export class MarketLifecycle {
                 pending.action === "buy" && fee > 0
                   ? gross - fee / pending.price
                   : gross;
-              this._commitFill(pending, net, fee);
+              this._commitFill(
+                pending,
+                net,
+                fee,
+                net + 1e-9 >= pending.shares ? "filled" : "partial_filled",
+              );
             },
             onFailed: (reason) => {
               // Suppress async channel "cancelled" events for orders we are actively cancelling.
@@ -1414,6 +1641,13 @@ export class MarketLifecycle {
               if (!pending) return;
               this._removePendingOrder(orderId);
               this._trackerUnlock(pending);
+              if (pending.intentId) {
+                this._tradingKernel.transitionIntent(
+                  pending.intentId,
+                  "failed",
+                  reason,
+                );
+              }
               this._marketLogger.log(
                 this._createOrderEntry(pending, "failed", { reason }),
               );
@@ -1505,6 +1739,7 @@ export class MarketLifecycle {
       orderId?: string;
       intentId?: string;
       shares?: number;
+      remainingShares?: number;
       error?: string;
     } = {},
   ): void {
@@ -1521,6 +1756,7 @@ export class MarketLifecycle {
         action: order.action,
         price: order.price,
         shares: opts.shares ?? order.shares,
+        remainingShares: opts.remainingShares,
         error: opts.error,
       },
     });
@@ -1543,6 +1779,7 @@ export class MarketLifecycle {
       action: order.action,
       price: order.price,
       shares: opts.shares ?? order.shares,
+      remainingShares: opts.remainingShares,
       status,
       error: opts.error,
     }, opts.intentId);
@@ -1562,7 +1799,7 @@ export class MarketLifecycle {
       shares: number;
     },
     intentId: string,
-  ): StrategyIntent {
+  ): PlaceOrderIntent {
     return {
       id: intentId,
       slug: this.slug,
@@ -1856,15 +2093,19 @@ export class MarketLifecycle {
     return false;
   }
 
-  private async _autoRedeem(): Promise<void> {
-    if (!this._conditionId) return; // belt-and-suspenders
+  private async _autoRedeem(): Promise<boolean> {
+    if (!this._conditionId) return false;
 
     this._log(`[${this.slug}] Redeeming positions...`, "dim");
     try {
       await this.client.redeemPositions(this._conditionId, true);
       this._log(`[${this.slug}] Redemption successful`, "green");
+      return true;
     } catch (e) {
       this._log(`[${this.slug}] Redemption failed: ${e}`, "red");
+      const message = e instanceof Error ? e.message : String(e);
+      this._triggerFatalError(new Error(`redemption failed: ${message}`));
+      return false;
     }
   }
 
@@ -1893,10 +2134,15 @@ export class MarketLifecycle {
       type: "INVALID_RUN",
       payload: { reason: e.message }
     });
-    this._setState("DONE");
+    this._buyBlocked = true;
+    this._sellBlocked = true;
+    if (this._state !== "STOPPING") this._setState("STOPPING");
   }
 
-  private _computePnl(): void {
+  private _computePnl(): {
+    held: Map<string, number>;
+    payout: number;
+  } | null {
     if (this._isInvalid) {
       this._log(`[${this.slug}] Skipping PnL computation for invalid run.`, "red");
       throw new Error("Run marked as invalid. PnL suppressed.");
@@ -1927,11 +2173,19 @@ export class MarketLifecycle {
       }
     }
 
+    let settlement: { held: Map<string, number>; payout: number } | null = null;
     const slot = slotFromSlug(this.slug).startTime;
     const data = this.apiQueue.marketResult.get(slot);
 
-    if (data?.closePrice) {
-      const resolvedUp = data.closePrice > data.openPrice;
+    if (
+      data &&
+      typeof data.openPrice === "number" &&
+      Number.isFinite(data.openPrice) &&
+      typeof data.closePrice === "number" &&
+      Number.isFinite(data.closePrice)
+    ) {
+      // Current BTC Up/Down 5m rules resolve equality to UP.
+      const resolvedUp = data.closePrice >= data.openPrice;
       const upToken = this._clobTokenIds![0];
       let unfilledShares = 0;
       let payout = 0;
@@ -1946,7 +2200,7 @@ export class MarketLifecycle {
       }
       pnl += payout;
 
-      this._tracker.onResolution(held, payout);
+      settlement = { held, payout };
       this._pnl = parseFloat(pnl.toFixed(4));
       this._log(
         `[${this.slug}] Resolved ${resolvedUp ? "UP" : "DOWN"}. PnL: ${this._pnl >= 0 ? "+" : ""}$${this._pnl.toFixed(2)}`,
@@ -1996,6 +2250,7 @@ export class MarketLifecycle {
       type: "ROUND_PNL",
       payload: { slug: this.slug, pnl: this._pnl }
     });
+    return settlement;
   }
 
   private _emitSpreadDepthSnapshot(): void {
@@ -2052,6 +2307,9 @@ export class MarketLifecycle {
       processedTsMs: this._clock.nowMs(),
     }).catch((error) => {
       this._log(`[event-store] failed to write ${eventType}: ${error}`, "red");
+      this._triggerFatalError(
+        error instanceof Error ? error : new Error(String(error)),
+      );
     });
   }
 }

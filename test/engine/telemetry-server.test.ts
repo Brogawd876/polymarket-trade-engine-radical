@@ -43,7 +43,10 @@ describe("Telemetry & Control Plane Hardening", () => {
     try {
       const health = await fetch("http://127.0.0.1:3005/api/health");
       expect(health.status).toBe(200);
-      expect(await health.text()).toBe("OK");
+      const healthData = await health.json() as any;
+      expect(healthData.controlPlane).toBe("HEALTHY");
+      expect(healthData.tradingReadiness).toBe("BLOCKED");
+      expect(healthData.dependencies.reconciliation.status).toBe("UNKNOWN");
 
       const status = await fetch("http://127.0.0.1:3005/api/status");
       expect(status.status).toBe(200);
@@ -116,6 +119,11 @@ describe("Telemetry & Control Plane Hardening", () => {
         headers: { Authorization: "Bearer test-operator-token" },
       });
       expect(authorized.status).toBe(200);
+
+      const legacyStatus = await fetch("http://127.0.0.1:3008/api/status");
+      expect(legacyStatus.status).toBe(401);
+      const telemetry = await fetch("http://127.0.0.1:3008/telemetry");
+      expect(telemetry.status).toBe(401);
     } finally {
       server.stop();
       if (originalToken === undefined) {
@@ -160,6 +168,106 @@ describe("Telemetry & Control Plane Hardening", () => {
     }
   });
 
+  test("ControlServer cannot smuggle prod through the simulation endpoint", async () => {
+    const bus = new TelemetryBus();
+    const sessionManager = new SessionManager(bus);
+    const server = new ControlServer({
+      port: 3010,
+      telemetryBus: bus,
+      sessionManager,
+    });
+    server.start();
+
+    try {
+      const response = await fetch(
+        "http://127.0.0.1:3010/api/operator/simulation/start",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ strategy: "simulation", prod: true }),
+        },
+      );
+      const body = (await response.json()) as {
+        success: boolean;
+        error: string;
+      };
+
+      expect(response.status).toBe(400);
+      expect(body.success).toBe(false);
+      expect(body.error).toContain("live exchange submission is disabled");
+      expect(sessionManager.getStatus().sessionState).toBe("idle");
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("ControlServer live promotion and unlock endpoints are tombstoned", async () => {
+    const originalToken = process.env.OPERATOR_AUTH_TOKEN;
+    delete process.env.OPERATOR_AUTH_TOKEN;
+    const bus = new TelemetryBus();
+    const sessionManager = new SessionManager(bus);
+    const server = new ControlServer({
+      port: 3011,
+      telemetryBus: bus,
+      sessionManager,
+    });
+    server.start();
+
+    try {
+      for (const path of [
+        "/api/operator/strategy/presets/simulation/promote-paper-candidate",
+        "/api/operator/tiny-live/unlock",
+      ]) {
+        const response = await fetch(`http://127.0.0.1:3011${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            presetId: "simulation",
+            operatorAck: true,
+          }),
+        });
+        const body = (await response.json()) as {
+          success: boolean;
+          error: string;
+        };
+        expect(response.status).toBe(423);
+        expect(body.success).toBe(false);
+        expect(body.error).toMatch(/disabled|unpassed/);
+      }
+
+    } finally {
+      server.stop();
+      if (originalToken === undefined) {
+        delete process.env.OPERATOR_AUTH_TOKEN;
+      } else {
+        process.env.OPERATOR_AUTH_TOKEN = originalToken;
+      }
+    }
+  });
+
+  test("ControlServer refuses production startup without operator authentication", () => {
+    const originalToken = process.env.OPERATOR_AUTH_TOKEN;
+    const originalNodeEnv = process.env.NODE_ENV;
+    delete process.env.OPERATOR_AUTH_TOKEN;
+    process.env.NODE_ENV = "production";
+    const server = new ControlServer({
+      port: 3011,
+      telemetryBus: new TelemetryBus(),
+      sessionManager: new SessionManager(new TelemetryBus()),
+    });
+    try {
+      expect(() => server.start()).toThrow(
+        "OPERATOR_AUTH_TOKEN is mandatory outside local development",
+      );
+    } finally {
+      server.stop();
+      if (originalToken === undefined) delete process.env.OPERATOR_AUTH_TOKEN;
+      else process.env.OPERATOR_AUTH_TOKEN = originalToken;
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
   test("Replay telemetry integration", async () => {
     const logPath = join(import.meta.dir, "..", "fixtures", "replay", "expired-order.log");
     const clock = new VirtualClock();
@@ -180,25 +288,15 @@ describe("Telemetry & Control Plane Hardening", () => {
     expect(events).toContain("SESSION_PNL");
   });
 
-  test("ControlServer status remains responsive during replay emergency-sell rejection", async () => {
+  test("ControlServer remains responsive while an incomplete replay fails closed", async () => {
     const logPath = join(import.meta.dir, "..", "fixtures", "replay", "filled-order.log");
-    const clock = new VirtualClock();
     const telemetryBus = new TelemetryBus();
-    const bot = new EarlyBird("simulation", 1, false, 1, true, logPath, {
-      clock,
-      persistState: false,
-      telemetry: telemetryBus,
-    });
     const sessionManager = new SessionManager(telemetryBus);
-    (sessionManager as any)._bot = bot;
-    (sessionManager as any)._runner = new ReplayRunner(bot.replayReader!, bot, clock, telemetryBus);
-
     const server = new ControlServer({ port: 3007, telemetryBus, sessionManager });
-    const runner = (sessionManager as any)._runner;
 
     server.start();
     try {
-      const runPromise = runner.run();
+      await sessionManager.startReplay(logPath);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 1_000);
       const status = await fetch("http://127.0.0.1:3007/api/status", {
@@ -209,7 +307,15 @@ describe("Telemetry & Control Plane Hardening", () => {
       expect(status.status).toBe(200);
       const data = await status.json() as any;
       expect(data.mode).toBe("replay");
-      await runPromise;
+
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (sessionManager.getStatus().sessionState === "failed") break;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      expect(sessionManager.getStatus().sessionState).toBe("failed");
+      expect(sessionManager.getStatus().blockReason).toContain(
+        "replay ended without explicit settlement evidence",
+      );
     } finally {
       server.stop();
     }

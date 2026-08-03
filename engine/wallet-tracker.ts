@@ -71,15 +71,20 @@ export class WalletTracker {
 
   /** Buy filled: USDC leaves wallet, shares added optimistically. */
   onBuyFilled(orderId: string, tokenId: string, price: number, shareCount: number): void {
-    const cost = this._reservedForBuys.get(orderId);
-    if (cost != null) {
-      // Normal fill: reservation still held, deduct full reserved cost
-      this._reservedForBuys.delete(orderId);
-      this._balance -= cost;
-    } else {
-      // Partial fill after cancel: reservation already unlocked, deduct actual cost
-      this._balance -= price * shareCount;
+    const fillCost = price * shareCount;
+    const reserved = this._reservedForBuys.get(orderId);
+    if (reserved != null) {
+      if (fillCost > reserved + EPSILON) {
+        throw new Error(
+          `wallet invariant violation: buy fill exceeds reservation for ${orderId}: reserved=${reserved}, fillCost=${fillCost}`,
+        );
+      }
+      const remainder = Math.max(0, reserved - fillCost);
+      if (remainder <= EPSILON) this._reservedForBuys.delete(orderId);
+      else this._reservedForBuys.set(orderId, remainder);
     }
+    // Charge only the confirmed fill. Any unfilled remainder stays reserved.
+    this._balance -= fillCost;
 
     const current = this._shares.get(tokenId) ?? 0;
     this._shares.set(tokenId, current + shareCount);
@@ -133,7 +138,20 @@ export class WalletTracker {
         `wallet invariant violation: sell fill exceeds held shares for ${tokenId}: held=${current}, fill=${shareCount}`,
       );
     }
-    this._reservedForSells.delete(orderId);
+    const reserved = this._reservedForSells.get(orderId);
+    if (reserved) {
+      if (
+        reserved.tokenId !== tokenId ||
+        shareCount > reserved.count + EPSILON
+      ) {
+        throw new Error(
+          `wallet invariant violation: sell fill exceeds reservation for ${orderId}`,
+        );
+      }
+      const remainder = Math.max(0, reserved.count - shareCount);
+      if (remainder <= EPSILON) this._reservedForSells.delete(orderId);
+      else this._reservedForSells.set(orderId, { tokenId, count: remainder });
+    }
 
     const next = Math.max(0, current - shareCount);
     this._shares.set(tokenId, next);

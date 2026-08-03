@@ -6,7 +6,17 @@ export function SystemStatusPanel() {
     const bootInfo = useStore(state => state.bootInfo);
 
     const mode = bootInfo?.mode || systemStatus?.mode || (operatorStatus?.engineMode === 'idle' ? 'IDLE' : 'UNKNOWN');
-    const statusLabel = systemStatus?.isShuttingDown ? 'SHUTTING DOWN' : (systemStatus ? 'RUNNING' : (operatorStatus?.engineMode === 'idle' ? 'READY' : 'UNKNOWN'));
+    const statusLabel = systemStatus?.isShuttingDown
+        ? 'SHUTTING DOWN'
+        : systemStatus
+            ? systemStatus.evidenceHealthy
+                ? systemStatus.completionProven
+                    ? 'COMPLETION PROVEN'
+                    : 'RUNNING — NOT RECONCILED'
+                : 'BLOCKED — EVIDENCE FAILURE'
+            : operatorStatus?.engineMode === 'idle'
+                ? 'IDLE — TRADING BLOCKED'
+                : 'UNKNOWN';
 
     return (
         <div className="bg-slate-800 p-4 rounded-lg border border-slate-700">
@@ -31,6 +41,18 @@ export function SystemStatusPanel() {
                 <div>
                     <span className="text-slate-400 block">Active Lifecycles</span>
                     <span className="text-slate-200 font-medium">{systemStatus?.activeLifecycles || 0}</span>   
+                </div>
+                <div>
+                    <span className="text-slate-400 block">Evidence</span>
+                    <span className="text-slate-200 font-medium">
+                        {systemStatus ? (systemStatus.evidenceHealthy ? 'Healthy (aggregate)' : 'Failed') : 'Not connected'}
+                    </span>
+                </div>
+                <div>
+                    <span className="text-slate-400 block">Completion proof</span>
+                    <span className="text-slate-200 font-medium">
+                        {systemStatus?.completionProven ? 'Proven' : 'Not proven'}
+                    </span>
                 </div>
             </div>
         </div>

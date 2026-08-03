@@ -268,4 +268,42 @@ describe("UserChannelBase taker fill handling (prod scenario)", () => {
 
     expect(filledShares).toBe(10);
   });
+
+  test("a mined partial reports only the increment and keeps the GTC remainder tracked", () => {
+    const channel = makeChannel();
+    const fills: number[] = [];
+    const req = makeRequest({ shares: 10 });
+    req.onFilled = (amount) => fills.push(amount);
+    channel.trackOrder("order-1", req);
+
+    channel.pushTradeEvent({
+      id: "trade-1",
+      status: "MATCHED",
+      size: "4",
+      taker_order_id: "order-1",
+    });
+    channel.pushTradeEvent({
+      id: "trade-1",
+      status: "MINED",
+      size: "4",
+      taker_order_id: "order-1",
+    });
+    expect(fills).toEqual([4]);
+    expect(channel.getMatchedSoFar("order-1")).toBe(4);
+    expect(channel.isMatched("order-1")).toBe(false);
+
+    channel.pushTradeEvent({
+      id: "trade-2",
+      status: "MATCHED",
+      size: "6",
+      taker_order_id: "order-1",
+    });
+    channel.pushTradeEvent({
+      id: "trade-2",
+      status: "MINED",
+      size: "6",
+      taker_order_id: "order-1",
+    });
+    expect(fills).toEqual([4, 6]);
+  });
 });

@@ -5,6 +5,10 @@ import { lateEntryOptimized } from "./late-entry-optimized.ts";
 import { lateEntryAdaptive } from "./late-entry-adaptive.ts";
 import { hyperAggressive } from "./hyper-aggressive.ts";
 import { fairValueMaker } from "./fair-value-maker.ts";
+import {
+  FVM_V110_RAW_UNGATED_CONFIG,
+  frozenFvmV110RawUngated,
+} from "./fair-value-maker-v1-1-0-raw-ungated.ts";
 
 export type StrategyVariant = {
   id: string;
@@ -30,6 +34,9 @@ export const strategies: Record<string, Strategy> = {
   "fair-value-maker": fairValueMaker,
 };
 
+const benchmarkStrategies: Record<string, Strategy> = {
+  "fvm-v1.1.0-raw-ungated-benchmark": frozenFvmV110RawUngated,
+};
 
 export const DEFAULT_STRATEGY = "simulation";
 
@@ -145,16 +152,9 @@ export const strategyVariants: Record<string, StrategyVariant> = {
   "fvm-v1.1.0-raw-ungated": {
     id: "fvm-v1.1.0-raw-ungated",
     label: "FVM v1.1.0 (Raw, Ungated)",
-    strategy: "fair-value-maker",
-    description: "Original champion: event-driven hygiene but NO disagreement abort or toxicity gates.",
-    config: {
-      skipHygiene: true,
-      minCvd10s: Number.NEGATIVE_INFINITY,
-      sharesMode: "fixed",
-      shares: 5,
-      minShares: 5,
-      divergenceThresholdAbs: 200,
-    },
+    strategy: "fvm-v1.1.0-raw-ungated-benchmark",
+    description: "Frozen repository-equivalent research benchmark: event-driven hygiene but NO disagreement abort or toxicity gates. Replay comparison only; historical PnL is not live-profit evidence.",
+    config: FVM_V110_RAW_UNGATED_CONFIG,
     paperEligible: false,
   },
   "fvm-v1.1.1-raw-gated": {
@@ -219,6 +219,9 @@ export const strategyVariants: Record<string, StrategyVariant> = {
   },
 };
 
+Object.freeze(strategyVariants["fvm-v1.1.0-raw-ungated"]!.config);
+Object.freeze(strategyVariants["fvm-v1.1.0-raw-ungated"]);
+
 export function listStrategyVariants(): StrategyVariant[] {
   return Object.values(strategyVariants).sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -246,7 +249,8 @@ export function resolveStrategySelection(selection: string | undefined): {
 
   if (!variant) throw new Error(`Unknown strategy variant: ${selected}`);
 
-  const strategy = strategies[variant.strategy];
+  const strategy =
+    strategies[variant.strategy] ?? benchmarkStrategies[variant.strategy];
   if (!strategy) throw new Error(`Unknown strategy: ${variant.strategy}`);
 
   return {

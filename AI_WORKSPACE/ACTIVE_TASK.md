@@ -1,23 +1,30 @@
-# Active Task: Order Churn and FVM Workflow Audit
-Status: **COMPLETED**
+# Active Task: Gate 1 Evidence Collection
+
+Status: **READY TO START; NO LIVE AUTHORITY**
 
 ## Objective
-Audit the FVM/live-order workflow to reduce order churn, fix market latching, ensure safe cancel lifecycles, and verify PnL/settlement tie-breaker rules.
 
-## Progress
-1. Implemented MOL (Minimum Order Life) and Hysteresis to reduce order churn.
-2. Fixed future-round Chainlink anchor latching.
-3. Fixed PolymarketVenueAdapter token mapping to parse `outcomes` array.
-4. Repaired UserChannel untracking bug (untracked *after* API confirm instead of before).
-5. (Postponed) Rewrite FVM active order state machine from loose booleans to explicit synced state map.
-6. Refactored `WalletTracker` to support partial fills properly.
-7. Explicitly tested and locked in tie-breaker settlement logic (DOWN wins on ties).
-8. Enforced `ConservativeMakerFillModel` as the default in simulation clients.
+Run the immutable recorder and production shadow path continuously without orders, then decide Gate 1 strictly from measured evidence.
 
-## Next Actions
-- Review PR #2.
-- Run CI.
-- After merge/review, run continuous-bankroll replay.
-- Compare against FVM v1.1.0 Raw/Ungated.
-- Do not paper trade until replay, fill-quality, wallet-accounting, and drawdown validation pass.
-- FVM OrderMachineState refactor remains postponed to a separate branch.
+## Completed Implementation
+
+1. Recovered and audited the intended repository line and the full 1,876-line master prompt.
+2. Implemented Phases A-H as a fail-closed non-live production architecture.
+3. Added the exact journal/outbox/lifecycle/ledger/reconciliation authority and crash recovery.
+4. Added exact market, anchor, feed, venue-book, dynamic market-info, and model-artifact authority.
+5. Added current CLOB V2 semantics behind an adapter, deterministic fake exchange, immutable recorder, continuous replay state, model pipeline/parity, strategy/exits, risk engine, health contract, promotion manager, CI, and security checks.
+6. Added deterministic fault coverage for ambiguity, partial fills, cancellation races, restarts, stale clocks, book gaps, post-only/FOK/FAK behavior, disk failure, settlement equality, missing settlement evidence, failed redemption, kill switch, loss limits, and false-complete shutdown.
+7. Verified the complete test and release-check matrix.
+
+## Next Evidence Work
+
+1. Assemble the public-data recorder/shadow process with no exchange-submission dependency.
+2. Capture unique immutable runs and manifests over a representative chronological cohort.
+3. Measure completeness, source latency, clock offsets, reconnects, dropped messages, and feature reproducibility.
+4. Produce and validate a Gate 1 evidence package.
+5. Only after Gate 1 passes, run the chronological offline model and realistic continuous-replay evidence programs for Gates 2 and 3.
+6. Gate 4 requires a live-data paper cohort with simulated orders and measured latency.
+
+## Hard Boundary
+
+Do not place, cancel, or redeem real positions. Gate 5 requires a new explicit authorization containing bankroll, maximum loss, venue-minimum order size, cohort, strategy/model/config hashes, kill-switch behavior, and every prior evidence package. Gate 6 requires another separate authorization.

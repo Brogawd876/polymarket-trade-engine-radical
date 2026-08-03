@@ -7,12 +7,18 @@ import { validateReplayFixture } from "./helpers/replay-fixtures.ts";
 import { StrategyLabBatchManager } from "../strategy-lab.ts";
 import { Env } from "../../utils/config.ts";
 import { LiveReadinessManager } from "../live-readiness.ts";
+import {
+  buildBlockedHealthReport,
+  validateHealthReport,
+  type ProductionHealthReport,
+} from "../production/health.ts";
 
 export type ControlServerOptions = {
   port?: number;
   telemetryBus: TelemetryBus;
   sessionManager: SessionManager;
   allowedOrigins?: string[];
+  healthProvider?: () => ProductionHealthReport;
 };
 
 /**
@@ -27,11 +33,26 @@ export class ControlServer {
   private _liveReadiness: LiveReadinessManager;
   private _port: number;
   private _allowedOrigins: Set<string>;
+  private _healthProvider: () => ProductionHealthReport;
 
   constructor(opts: ControlServerOptions) {
     this._port = opts.port ?? 3000;
     this._telemetryBus = opts.telemetryBus;
     this._sessionManager = opts.sessionManager;
+    this._healthProvider =
+      opts.healthProvider ??
+      (() => {
+        const status = this._sessionManager.getStatus();
+        return buildBlockedHealthReport({
+          engineRunning:
+            status.sessionState === "running" ||
+            status.sessionState === "starting" ||
+            status.sessionState === "stopping",
+          evidenceHealthy: status.engineStatus?.evidenceHealthy ?? false,
+          completionProven: status.engineStatus?.completionProven ?? false,
+          blockReason: status.blockReason,
+        });
+      });
     this._strategyLab = new StrategyLabBatchManager();
     this._liveReadiness = new LiveReadinessManager(this._strategyLab);
     this._sessionManager.setPaperEvidenceRecorder(async (evidence) => {
@@ -54,6 +75,12 @@ export class ControlServer {
   start() {
     const bus = this._telemetryBus;
     const allowedOrigins = this._allowedOrigins;
+    const configuredAuthToken = Env.get("OPERATOR_AUTH_TOKEN");
+    if (process.env.NODE_ENV === "production" && !configuredAuthToken) {
+      throw new Error(
+        "OPERATOR_AUTH_TOKEN is mandatory outside local development",
+      );
+    }
 
     this._server = Bun.serve<{ sessionId: string }>({
       port: this._port,
@@ -80,9 +107,15 @@ export class ControlServer {
           return new Response(null, { status: 204, headers: responseHeaders });
         }
 
-        // Auth Token Validation (Optional but recommended for production)
+        // Operator controls, legacy status, and telemetry all expose sensitive
+        // operational state. When authentication is configured, protect all of
+        // them rather than only mutation endpoints.
         const authToken = Env.get("OPERATOR_AUTH_TOKEN");
-        if (authToken && url.pathname.startsWith("/api/operator/")) {
+        const protectedPath =
+          url.pathname.startsWith("/api/operator/") ||
+          url.pathname === "/api/status" ||
+          url.pathname === "/telemetry";
+        if (authToken && protectedPath) {
             const authHeader = req.headers.get("Authorization");
             if (!authHeader || authHeader !== `Bearer ${authToken}`) {
                 return new Response("Unauthorized: Invalid or missing Operator Token", { 
@@ -222,12 +255,10 @@ export class ControlServer {
 
         const promotePresetMatch = url.pathname.match(/^\/api\/operator\/strategy\/presets\/([^/]+)\/promote-paper-candidate$/);
         if (promotePresetMatch && req.method === "POST") {
-            try {
-                const result = await this._liveReadiness.promotePaperCandidate(decodeURIComponent(promotePresetMatch[1]!));
-                return Response.json(result, { status: result.success ? 200 : 400, headers: responseHeaders });
-            } catch (e: any) {
-                return Response.json({ success: false, error: e.message }, { status: 400, headers: responseHeaders });
-            }
+            return Response.json({
+                success: false,
+                error: "live promotion is disabled while Gate 0 is unpassed and live authorization is not implemented",
+            }, { status: 423, headers: responseHeaders });
         }
 
         if (url.pathname === "/api/operator/strategy-lab/experiments" && req.method === "POST") {
@@ -257,12 +288,10 @@ export class ControlServer {
         }
 
         if (url.pathname === "/api/operator/tiny-live/unlock" && req.method === "POST") {
-            try {
-                const result = await this._liveReadiness.unlockTinyLive(await req.json() as any);
-                return Response.json(result, { status: result.success ? 200 : 400, headers: responseHeaders });
-            } catch (e: any) {
-                return Response.json({ success: false, error: e.message }, { status: 400, headers: responseHeaders });
-            }
+            return Response.json({
+                success: false,
+                error: "tiny-live unlock is disabled while Gate 0 is unpassed and live authorization is not implemented",
+            }, { status: 423, headers: responseHeaders });
         }
 
         if (url.pathname === "/api/operator/strategy-lab/batches" && req.method === "POST") {
@@ -294,20 +323,13 @@ export class ControlServer {
         }
 
         if (url.pathname === "/api/operator/config") {
-            const redact = (val: string) => (val && val.length > 8) ? `${val.slice(0, 4)}...${val.slice(-4)}` : (val ? "****" : "MISSING");
             const config = {
                 TICKER: Env.get("TICKER"),
                 MARKET_WINDOW: Env.get("MARKET_WINDOW"),
                 MARKET_ASSET: Env.get("MARKET_ASSET"),
-                PROD: Env.get("PROD"),
-                FORCE_PROD: process.env.FORCE_PROD === "true",
                 BINANCE_US: Env.get("BINANCE_US"),
-                PRIVATE_KEY: redact(Env.get("PRIVATE_KEY")),
-                POLY_FUNDER_ADDRESS: Env.get("POLY_FUNDER_ADDRESS"),
-                POLY_SIGNATURE_TYPE: Env.get("POLY_SIGNATURE_TYPE"),
-                BUILDER_KEY: redact(Env.get("BUILDER_KEY")),
-                BUILDER_SECRET: redact(Env.get("BUILDER_SECRET")),
-                BUILDER_PASSPHRASE: redact(Env.get("BUILDER_PASSPHRASE")),
+                EXCHANGE_SUBMISSION: "disabled",
+                LIVE_AUTHORIZATION: "not-implemented",
             };
             return Response.json(config, { headers: responseHeaders });
         }
@@ -335,7 +357,8 @@ export class ControlServer {
         }
 
         if (url.pathname === "/api/health") {
-            return new Response("OK", { headers: responseHeaders });
+            const report = validateHealthReport(this._healthProvider());
+            return Response.json(report, { headers: responseHeaders });
         }
 
         return new Response("Not Found", { status: 404, headers: responseHeaders });

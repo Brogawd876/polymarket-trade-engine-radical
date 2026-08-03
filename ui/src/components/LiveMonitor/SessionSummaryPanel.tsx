@@ -10,9 +10,12 @@ export function SessionSummaryPanel() {
             
             <div className="space-y-4">
                 <div className="p-3 bg-slate-900/50 rounded border border-slate-700/50">
-                    <div className="text-xs text-slate-400 mb-1">Total PnL</div>
-                    <div className={`text-2xl font-bold ${!sessionPnl ? 'text-slate-500' : sessionPnl.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    <div className="text-xs text-slate-400 mb-1">Unreconciled simulated PnL</div>
+                    <div className={`text-2xl font-bold ${!sessionPnl ? 'text-slate-500' : sessionPnl.pnl < 0 ? 'text-red-400' : 'text-slate-200'}`}>
                         {sessionPnl ? `$${sessionPnl.pnl.toFixed(2)}` : '---'}
+                    </div>
+                    <div className="mt-1 text-[11px] text-amber-300">
+                        Not wallet-reconciled profit evidence
                     </div>
                 </div>
 

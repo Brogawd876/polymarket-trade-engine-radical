@@ -10,31 +10,47 @@ describe("capture-paired-replay-l2 orchestrator", () => {
     const exitCode = await new Promise(r => p.on("close", r));
     expect(exitCode).toBe(1);
     expect(err).toContain("Live/prod flags are forbidden");
-  });
+  }, 15000);
 
-  test("Recorder uses dynamic duration and tail buffer is configurable", async () => {
+  test("Raw L2 outlives the replay recorder and both tails are configurable", async () => {
     const file = Bun.file("scripts/capture-paired-replay-l2.ts");
     const text = await file.text();
     
-    // 1. Recorder command uses dynamic duration, not fixed 600000ms by default
+    // Replay recording includes the configured post-slot tail.
     expect(text).not.toContain('"--duration-ms", "600000"');
-    expect(text).toContain('const finalDurationMs = recorderDurationMs !== undefined');
-    expect(text).toContain('timeToSlotEnd + 30000 + tailBufferMs + recorderSafetyBufferMs');
-    expect(text).toContain('"--duration-ms", finalDurationMs.toString()');
+    expect(text).toContain("const replayDurationMs =");
+    expect(text).toContain("timeToSlotEnd + tailBufferMs");
+    expect(text).toContain(
+      '"--duration-ms", replayDurationMs.toString()',
+    );
     
-    // 2. Post-runtime tail buffer default is at least 60000ms
-    expect(text).toContain('let tailBufferMs = 60000;');
+    // The raw recorder accounts for startup and stays alive after replay exits.
+    expect(text).toContain("const recorderReadyTimeoutMs = 10000;");
+    expect(text).toContain(
+      "replayDurationMs + recorderReadyTimeoutMs + recorderSafetyBufferMs",
+    );
+    expect(text).toContain(
+      '"--duration-ms", rawL2DurationMs.toString()',
+    );
     
-    // 3. CLI --tail-buffer-ms overrides the default
-    expect(text).toContain('else if (arg === "--tail-buffer-ms") tailBufferMs = parseInt(args[++i] || "60000", 10);');
+    // Defaults and CLI overrides retain the newer five-minute replay tail.
+    expect(text).toContain("let tailBufferMs = 300000;");
+    expect(text).toContain(
+      'else if (arg === "--tail-buffer-ms") tailBufferMs = parseInt(args[++i] || "300000", 10);',
+    );
+    expect(text).toContain(
+      'else if (arg === "--recorder-safety-buffer-ms") recorderSafetyBufferMs = parseInt(args[++i] || "10000", 10);',
+    );
     
-    // 4. Runtime exits before recorder shutdown is attempted
+    // Replay exits, the raw-only safety tail elapses, then shutdown begins.
     const runtimeWaitIdx = text.indexOf('await runtime.promise;');
-    const tailBufferWaitIdx = text.indexOf('await new Promise(r => setTimeout(r, tailBufferMs));');
+    const safetyTailWaitIdx = text.indexOf(
+      "await new Promise(r => setTimeout(r, recorderSafetyBufferMs));",
+    );
     const recorderStopIdx = text.indexOf('recorder.process.stdin?.write("stop\\n");');
     
     expect(runtimeWaitIdx).toBeGreaterThan(0);
-    expect(tailBufferWaitIdx).toBeGreaterThan(runtimeWaitIdx);
-    expect(recorderStopIdx).toBeGreaterThan(tailBufferWaitIdx);
+    expect(safetyTailWaitIdx).toBeGreaterThan(runtimeWaitIdx);
+    expect(recorderStopIdx).toBeGreaterThan(safetyTailWaitIdx);
   });
 });

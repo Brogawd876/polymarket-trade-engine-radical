@@ -98,7 +98,7 @@ describe("LiveReadinessManager", () => {
     throw new Error("Timed out waiting for fake experiment");
   });
 
-  test("paper evidence records rows and gates promotion", async () => {
+  test("paper evidence records rows but cannot promote while Gate 0 is unpassed", async () => {
     const manager = await tempManager();
     const before = await manager.promotePaperCandidate("simulation");
     expect(before.success).toBe(false);
@@ -123,8 +123,9 @@ describe("LiveReadinessManager", () => {
     expect(evidence.summary.cleanSessions).toBe(1);
 
     const after = await manager.promotePaperCandidate("simulation");
-    expect(after.success).toBe(true);
-    expect(after.preset?.promotionStatus).toBe("tiny_live_candidate");
+    expect(after.success).toBe(false);
+    expect(after.report.tinyLiveEligible).toBe(false);
+    expect(after.error).toMatch(/Gate 0 is unpassed/);
   });
 
   test("failed paper evidence is row-level and does not satisfy promotion", async () => {
@@ -165,5 +166,23 @@ describe("LiveReadinessManager", () => {
 
     expect(report.tinyLiveEligible).toBe(false);
     expect(report.reasons.length).toBeGreaterThan(0);
+  });
+
+  test("rejects tiny-live metadata and unlock acknowledgement cannot authorize it", async () => {
+    const manager = await tempManager();
+
+    await expect(
+      manager.savePreset({
+        moduleId: "simulation",
+        riskProfile: "tiny-live",
+      }),
+    ).rejects.toThrow(/tiny-live promotion metadata is disabled/);
+
+    const unlocked = await manager.unlockTinyLive({
+      presetId: "simulation",
+      operatorAck: true,
+    });
+    expect(unlocked.success).toBe(false);
+    expect(unlocked.error).toMatch(/Gate 0 is unpassed/);
   });
 });

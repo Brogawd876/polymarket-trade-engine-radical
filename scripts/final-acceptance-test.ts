@@ -1,9 +1,8 @@
-import { OrderType, Side } from "@polymarket/clob-client-v2";
+import { Side } from "@polymarket/clob-client-v2";
 import { PolymarketEarlyBirdClient } from "../engine/client.ts";
 import { Env } from "../utils/config.ts";
 import { resolveTradableBtc5mMarket } from "./btc-5m-market.ts";
 import { Wallet } from "@ethersproject/wallet";
-import { extractOrderId, responseError } from "../utils/clob-response.ts";
 
 const EXPECTED_OWNER = "0x3528764a45bB13eC6BD8Deb1a73b5034742E6329";
 const EXPECTED_FUNDER = "0x9bB7C3aafCeb82665293f9cd784F61112fFa4c51";
@@ -16,7 +15,7 @@ function sameAddress(a: string | undefined, b: string): boolean {
 }
 
 async function main() {
-  console.log("--- FINAL BTC 5M TYPE 3 ACCEPTANCE TEST ---");
+  console.log("--- OFFLINE BTC 5M TYPE 3 ACCEPTANCE CHECK ---");
 
   const client = new PolymarketEarlyBirdClient();
   await client.init();
@@ -28,11 +27,6 @@ async function main() {
   }
   if (!sameAddress(funder, EXPECTED_FUNDER)) {
     throw new Error(`Funder mismatch: expected ${EXPECTED_FUNDER}, got ${funder}`);
-  }
-
-  const balance = await client.getUSDCBalance();
-  if (balance < 1) {
-    throw new Error(`Insufficient CLOB balance for live test: ${balance}`);
   }
 
   const market = await resolveTradableBtc5mMarket();
@@ -47,7 +41,7 @@ async function main() {
   console.log(`DOWN token ID: ${market.downTokenId}`);
   console.log(`chosen token ID: ${market.chosenTokenId}`);
 
-  const signedOrder = await client.clob.orderBuilder.buildOrder(
+  const signedOrder = await client.buildSignedOrderForVerification(
     {
       tokenID: market.chosenTokenId,
       price: TEST_PRICE,
@@ -58,7 +52,7 @@ async function main() {
     ORDER_VERSION,
   );
 
-  console.log("--- RAW LIVE TEST ORDER ---");
+  console.log("--- SIGNED ORDER FIELDS (NOT SUBMITTED) ---");
   console.log(`maker: ${signedOrder.maker}`);
   console.log(`signer: ${signedOrder.signer}`);
   console.log(`signatureType: ${signedOrder.signatureType}`);
@@ -80,30 +74,8 @@ async function main() {
     throw new Error(`Raw order version mismatch: ${ORDER_VERSION}`);
   }
 
-  console.log("Submitting post-only GTC order...");
-  const postResp = await client.clob.postOrder(signedOrder, OrderType.GTC, true);
-  const postError = responseError(postResp);
-  const orderId = extractOrderId(postResp);
-  if (postError || !orderId) {
-    throw new Error(`Order rejected: ${postError ?? JSON.stringify(postResp)}`);
-  }
-  console.log(`Accepted order ID: ${orderId}`);
-
-  console.log("Canceling accepted order...");
-  const cancelResp = await client.clob.cancelOrder({ orderID: orderId });
-  const cancelError = responseError(cancelResp);
-  if (cancelError) {
-    throw new Error(`Cancel rejected: ${cancelError}`);
-  }
-  console.log(`Cancel response: ${JSON.stringify(cancelResp)}`);
-
-  const openOrders = await client.clob.getOpenOrders({ market: market.conditionId });
-  const stillOpen = openOrders.some((order: any) => order.id === orderId || order.orderID === orderId);
-  if (stillOpen) {
-    throw new Error(`Canceled order still appears in open orders: ${orderId}`);
-  }
-  console.log(`Open orders after cancellation: ${openOrders.length}`);
-  console.log("FINAL RESULT: PASS");
+  console.log("No order was submitted. Live acceptance is unavailable in this branch.");
+  console.log("OFFLINE RESULT: PASS");
 }
 
 main().catch((err) => {

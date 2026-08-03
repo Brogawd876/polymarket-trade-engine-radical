@@ -3,7 +3,12 @@
   "module": "index.ts",
   "type": "module",
   "scripts": {
-    "check": "tsc -b --noEmit"
+    "check": "tsc -b --noEmit",
+    "security:secrets": "bun scripts/security-scan.ts",
+    "security:defaults": "bun scripts/check-production-defaults.ts",
+    "test:python": "python -m unittest discover -s research_pipeline/tests -v",
+    "test:parity": "bun test ./test/engine/model-parity.test.ts",
+    "test:determinism": "bun test ./test/engine/production-fake-exchange.test.ts ./test/engine/continuous-replay.test.ts --rerun-each 2"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -15,9 +20,9 @@
   "dependencies": {
     "@ethersproject/wallet": "^5.8.0",
     "@js-sdsl/ordered-map": "^4.4.2",
-    "@polymarket/builder-relayer-client": "^0.0.9",
+    "@polymarket/builder-relayer-client": "0.0.10",
     "@polymarket/builder-signing-sdk": "^1.0.0",
-    "@polymarket/clob-client-v2": "^1.0.6",
+    "@polymarket/clob-client-v2": "1.1.0",
     "commander": "^14.0.3",
     "dotenv": "^17.4.2",
     "ethers": "^6",

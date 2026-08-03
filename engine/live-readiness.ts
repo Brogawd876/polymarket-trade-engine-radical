@@ -251,7 +251,6 @@ async function writeJsonFile(file: string, value: unknown): Promise<void> {
 export class LiveReadinessManager {
   private experiments = new Map<string, ExperimentResult>();
   private recommendations = new Map<string, PaperTuningRecommendation>();
-  private tinyLiveUnlocks = new Map<string, PromotionReport>();
   private readonly presetFile: string;
   private readonly evidenceFile: string;
 
@@ -301,7 +300,17 @@ export class LiveReadinessManager {
 
   async listPresets(): Promise<StrategyPreset[]> {
     const saved = await readJsonFile<StrategyPreset[]>(this.presetFile, []);
-    if (saved.length > 0) return saved;
+    if (saved.length > 0) {
+      return saved.map((preset) => ({
+        ...preset,
+        riskProfile:
+          preset.riskProfile === "tiny-live" ? "paper" : preset.riskProfile,
+        promotionStatus:
+          preset.promotionStatus === "tiny_live_candidate"
+            ? "paper_candidate"
+            : preset.promotionStatus,
+      }));
+    }
     const now = Date.now();
     return builtInModules().map((module) => ({
       id: module.id,
@@ -318,6 +327,14 @@ export class LiveReadinessManager {
   }
 
   async savePreset(input: Partial<StrategyPreset> & { moduleId: string; label?: string; config?: Record<string, unknown> }): Promise<StrategyPreset> {
+    if (
+      input.riskProfile === "tiny-live" ||
+      input.promotionStatus === "tiny_live_candidate"
+    ) {
+      throw new Error(
+        "tiny-live promotion metadata is disabled while Gate 0 is unpassed and live authorization is not implemented",
+      );
+    }
     const modules = await this.listModules();
     const module = modules.find(item => item.id === input.moduleId);
     if (!module) throw new Error(`Unknown strategy module: ${input.moduleId}`);
@@ -390,11 +407,7 @@ export class LiveReadinessManager {
     const preset = presets.find(item => item.id === presetId);
     if (!preset) throw new Error("Preset not found");
     const report = await this.evaluatePromotion(preset);
-    if (!report.tinyLiveEligible) {
-      return { success: false, report, error: report.reasons.join("; ") };
-    }
-    const promoted = await this.savePreset({ ...preset, promotionStatus: "tiny_live_candidate", lastValidation: report });
-    return { success: true, preset: promoted, report };
+    return { success: false, report, error: report.reasons.join("; ") };
   }
 
   async createExperiment(request: ExperimentRequest): Promise<ExperimentResult> {
@@ -439,33 +452,39 @@ export class LiveReadinessManager {
     const preset = presets.find(item => item.id === request.presetId);
     if (!preset) throw new Error("Preset not found");
     const report = await this.evaluatePromotion(preset);
-    if (!request.operatorAck) report.reasons.push("operator acknowledgement is required");
-    const success = report.tinyLiveEligible && request.operatorAck === true;
-    if (success) {
-      this.tinyLiveUnlocks.set(preset.id, report);
-      await this.savePreset({ ...preset, riskProfile: "tiny-live", promotionStatus: "tiny_live_candidate", lastValidation: report });
-    }
-    return { success, presetId: preset.id, guard: ULTRA_TINY_LIVE_GUARD, report, error: success ? undefined : report.reasons.join("; ") };
+    return {
+      success: false,
+      presetId: preset.id,
+      guard: ULTRA_TINY_LIVE_GUARD,
+      report,
+      error: report.reasons.join("; "),
+    };
   }
 
   async evaluatePromotion(preset: StrategyPreset): Promise<PromotionReport> {
     const reasons: string[] = [];
-    if (preset.promotionStatus !== "tiny_live_candidate" && preset.promotionStatus !== "paper_candidate") {
-      reasons.push("preset is not a paper or tiny-live candidate");
+    if (preset.promotionStatus !== "paper_candidate") {
+      reasons.push("preset is not a paper candidate");
     }
-    const replayPassed = preset.lastValidation?.replayPassed === true || preset.promotionStatus === "paper_candidate" || preset.promotionStatus === "tiny_live_candidate";
-    const paperApproved = preset.riskProfile === "paper" || preset.riskProfile === "tiny-live";
+    const replayPassed =
+      preset.lastValidation?.replayPassed === true ||
+      preset.promotionStatus === "paper_candidate" ||
+      preset.promotionStatus === "replay_candidate";
+    const paperApproved = preset.riskProfile === "paper";
     const evidence = await this.getPresetEvidence(preset.id);
     const paperEvidencePassed = evidence.summary.cleanSessions > 0;
     if (!replayPassed) reasons.push("positive replay holdout is required");
     if (!paperApproved) reasons.push("approved paper recommendation is required");
     if (!paperEvidencePassed) reasons.push("at least one clean paper evidence row is required");
+    reasons.push(
+      "Gate 0 is unpassed and live authorization is not implemented",
+    );
     return {
       presetId: preset.id,
       replayPassed,
       paperApproved,
       paperEvidencePassed,
-      tinyLiveEligible: replayPassed && paperApproved && paperEvidencePassed && reasons.length === 0,
+      tinyLiveEligible: false,
       reasons,
       checkedAtMs: Date.now(),
     };

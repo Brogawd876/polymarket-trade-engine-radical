@@ -196,6 +196,14 @@ class FailingEventWriter implements EventWriter {
   async close(): Promise<void> {}
 }
 
+describe("EarlyBird — submission authority", () => {
+  test("production client selection is disabled before credentials or network access", () => {
+    expect(
+      () => new EarlyBird("test-strategy", 1, true, 1),
+    ).toThrow(/live exchange submission is disabled/);
+  });
+});
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("EarlyBird — rounds", () => {
@@ -278,11 +286,12 @@ describe("EarlyBird — rounds", () => {
   );
 
   test(
-    "event-store write failures do not crash shutdown",
+    "event-store write failures fail startup closed",
     async () => {
       h = makeHarness({ eventWriter: new FailingEventWriter() });
-      await h.eb.start();
-      await expect(h.eb.stop()).resolves.toBeUndefined();
+      await expect(h.eb.start()).rejects.toThrow(
+        /authoritative event journal unavailable/,
+      );
     },
     TEST_TIMEOUT,
   );

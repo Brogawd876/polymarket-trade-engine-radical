@@ -15,6 +15,10 @@ import type {
   RoundWindow,
 } from "../../engine/bot-core/data-sources.ts";
 import { createEventClock } from "../../engine/bot-core/data-sources.ts";
+import {
+  NoopEventWriter,
+  type EventWriter,
+} from "../../engine/event-store/writer.ts";
 
 function aggregate(disagreement: boolean): PredictiveAggregateSnapshot {
   return {
@@ -218,6 +222,7 @@ async function exerciseLifecycle(opts: {
   seedOpenExposureUsd?: number;
   missingResolution?: boolean;
   feedReadinessTimeoutMs?: number;
+  eventWriter?: EventWriter;
 } = {}) {
   const disagreement = opts.disagreement ?? false;
   let postCount = 0;
@@ -260,6 +265,7 @@ async function exerciseLifecycle(opts: {
     leadLag: mockLeadLag,
     feedReadinessTimeoutMs: opts.feedReadinessTimeoutMs,
     feedReadinessPollMs: 1,
+    eventWriter: opts.eventWriter,
   });
 
   (lifecycle as any)._clobTokenIds = ["up", "down"];
@@ -293,11 +299,23 @@ async function exerciseLifecycle(opts: {
 
 describe("MarketLifecycle aggregated risk hook", () => {
   test("allows the real order path under healthy predictive conditions", async () => {
-    const result = await exerciseLifecycle();
+    const writer = new NoopEventWriter();
+    const result = await exerciseLifecycle({ eventWriter: writer });
 
     expect(result.postCount).toBe(1);
     expect(result.failedReason).toBeNull();
     expect(result.strategyInvoked).toBe(true);
+    const intents = writer.events.filter(
+      (event) => event.eventType === "order_intent",
+    );
+    const submissions = writer.events.filter(
+      (event) => event.eventType === "order_submitted",
+    );
+    expect(intents).toHaveLength(1);
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0]!.payload.intentId).toBe(
+      intents[0]!.payload.intentId,
+    );
   });
 
   test("blocks the real order path when aggregate disagreement is true", async () => {

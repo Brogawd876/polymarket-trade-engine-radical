@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { FixtureRunner, UP_TOKEN, SLOT_START_MS, SLOT_END_MS } from "./helpers/fixture-runner.ts";
+import type { TelemetryEvent } from "../../engine/telemetry/index.ts";
 
 const LOG_START_TS = 1777108047232;
 
@@ -78,9 +79,8 @@ describe("PnL and Settlement Truth Audit", () => {
     expect(runner.lifecycle.pnl).toBeCloseTo(-5);
   });
 
-  test("DOWN wins when closePrice == openPrice (Tie-breaker rule)", async () => {
-    // According to Polymarket "Up or Down" rules, "Up" requires strictly greater.
-    // If close == open, "Up" is false, therefore "Down" wins (UP loses).
+  test("UP wins when closePrice == openPrice (current equality rule)", async () => {
+    // Current Polymarket BTC Up/Down 5m rules explicitly resolve equality to UP.
     await runner.setup(async (ctx) => {
       ctx.postOrders([
         { req: { tokenId: UP_TOKEN, action: "buy", price: 0.5, shares: 10 }, expireAtMs: SLOT_END_MS }
@@ -102,7 +102,74 @@ describe("PnL and Settlement Truth Audit", () => {
     runner.lifecycle.shutdown();
     await runner.advanceTo(SLOT_END_MS + 2000);
 
-    // Cost: $5 for UP. Payout: $0 for UP.
-    expect(runner.lifecycle.pnl).toBeCloseTo(-5);
+    // Cost: $5 for UP. Payout: $10 for UP.
+    expect(runner.lifecycle.pnl).toBeCloseTo(5);
+  });
+
+  test("failed redemption blocks completion, cash credit, and emits invalid evidence", async () => {
+    const telemetry: TelemetryEvent[] = [];
+    runner = new FixtureRunner(100, {
+      telemetry: {
+        push(event) {
+          telemetry.push(event);
+        },
+      },
+    });
+    await runner.setup(async (ctx) => {
+      ctx.postOrders([
+        {
+          req: {
+            tokenId: UP_TOKEN,
+            action: "buy",
+            price: 0.5,
+            shares: 10,
+          },
+          expireAtMs: SLOT_END_MS,
+        },
+      ]);
+    });
+
+    await runner.advanceTo(LOG_START_TS + 1000);
+    const orderId = runner.lifecycle.pendingOrders[0]!.orderId;
+    (runner.lifecycle as any)._userChannel.processTradeEvent({
+      id: "trade-redemption-failure",
+      status: "MATCHED",
+      size: "10",
+      taker_order_id: orderId,
+      maker_orders: [],
+    });
+    (runner.lifecycle as any)._userChannel.processTradeEvent({
+      id: "trade-redemption-failure",
+      status: "MINED",
+      size: "10",
+      taker_order_id: orderId,
+      maker_orders: [],
+    });
+    expect(runner.tracker.balance).toBeCloseTo(95);
+    expect(runner.tracker.availableShares(UP_TOKEN)).toBeCloseTo(10);
+
+    (runner.client as any).redeemPositions = async () => {
+      throw new Error("relayer unavailable");
+    };
+    runner.apiQueue.marketResult.set(SLOT_START_MS, {
+      openPrice: 100,
+      closePrice: 101,
+    } as any);
+
+    await runner.advanceTo(SLOT_END_MS + 100);
+    runner.lifecycle.shutdown();
+    await runner.advanceTo(SLOT_END_MS + 2_000);
+
+    expect(runner.lifecycle.state).toBe("STOPPING");
+    expect(runner.lifecycle.isInvalid).toBe(true);
+    expect(runner.tracker.balance).toBeCloseTo(95);
+    expect(runner.tracker.availableShares(UP_TOKEN)).toBeCloseTo(10);
+    expect(
+      telemetry.some(
+        event =>
+          event.type === "INVALID_RUN" &&
+          event.payload.reason.includes("redemption failed"),
+      ),
+    ).toBe(true);
   });
 });

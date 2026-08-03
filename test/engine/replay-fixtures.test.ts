@@ -34,7 +34,7 @@ describe("Historical Replay Regression", () => {
     // For now, completion and state-machine flow is the primary assertion.
   });
 
-  test("filled-order fixture reaches DONE", async () => {
+  test("filled-order fixture is rejected because it lacks settlement evidence", async () => {
     const logPath = join(FIXTURES_DIR, "filled-order.log");
     const clock = new VirtualClock();
     const bot = new EarlyBird(
@@ -49,10 +49,11 @@ describe("Historical Replay Regression", () => {
     const reader = bot.replayReader!;
     const runner = new ReplayRunner(reader, bot, clock);
     
-    const result = await runner.run();
-    expect(result.completed).toBe(true);
-    expect(bot.activeLifecycleCount).toBe(0);
-  });
+    await expect(runner.run()).rejects.toThrow(
+      "replay ended without explicit settlement evidence",
+    );
+    expect(bot.activeLifecycleCount).toBe(1);
+  }, 180_000);
 
   test("synthetic-divergence fixture blocks orders", async () => {
     const logPath = join(FIXTURES_DIR, "synthetic-divergence.log");

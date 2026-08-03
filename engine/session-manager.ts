@@ -69,6 +69,11 @@ export class SessionManager {
     if (this._sessionState === "running" || this._sessionState === "starting") {
       throw new Error("Session is already active");
     }
+    if (config.prod === true) {
+      throw new Error(
+        "live exchange submission is disabled pending Gate 5 evidence and separate explicit authorization",
+      );
+    }
     
     this._sessionState = "starting";
     this._blockReason = null;
@@ -188,6 +193,9 @@ export class SessionManager {
     try {
       if (this._bot) {
          await this._bot.stop();
+         if (!this._bot.completionProven) {
+           throw new Error("session shutdown lacks authoritative completion evidence");
+         }
       }
       this._sessionState = "completed";
       await this._finalizePaperEvidence("canceled");
@@ -226,7 +234,11 @@ export class SessionManager {
     const bot = this._bot;
     const interval = setInterval(() => {
       // If shutting down is true and lifecycles = 0, it has settled.
-      if (bot.isShuttingDown && bot.activeLifecycleCount === 0) {
+      if (
+        bot.isShuttingDown &&
+        bot.activeLifecycleCount === 0 &&
+        bot.completionProven
+      ) {
          clearInterval(interval);
          this._sessionState = "completed";
          void this._finalizePaperEvidence("completed");

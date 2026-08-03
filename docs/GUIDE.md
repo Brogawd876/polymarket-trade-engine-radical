@@ -2,7 +2,7 @@
 
 This document is the primary reference for developing strategies on the Polymarket binary prediction market trading engine. It covers the CLI interface, configuration, engine architecture, the strategy API, and best practices.
 
-> **Upgrading from engine which uses clob-client v1?** See the [v2 Migration Guide](MIGRATE_V2.md) for the one-time USDC.e → pUSD wrap step required before running the engine.
+> **Current safety status (2026-08-02):** This branch supports replay and simulated paper execution only. Real exchange submission is disabled at multiple authority boundaries. `--prod`, wallet credentials, prior live history, and old `FORCE_PROD` guidance do not enable or authorize trading. See [AI_WORKSPACE/CURRENT_STATE.md](../AI_WORKSPACE/CURRENT_STATE.md).
 
 ---
 
@@ -29,7 +29,7 @@ This document is the primary reference for developing strategies on the Polymark
 
 ## Overview
 
-The engine trades binary prediction markets on Polymarket. Each market asks whether a crypto asset (BTC, ETH, XRP, SOL, or DOGE) will finish above or below a reference price (the "price to beat") at the end of a 5-minute or 15-minute window. The engine manages market discovery, order book subscriptions, order placement, fill tracking, and PnL accounting. Your job as a strategy author is to implement a single async function that decides what to buy, when to sell, and how to react to fills and expirations.
+The current authorized scope is BTC Up/Down five-minute replay and simulated paper execution. For this market family, UP resolves when the final value is greater than or equal to the Price to Beat; DOWN resolves only when it is lower. Other assets and windows remain historical configuration options, not production-validated scope.
 
 ---
 
@@ -43,8 +43,7 @@ bun run index.ts --rounds 10
 # Simulation mode -- specific strategy, enter 2 slots ahead
 bun run index.ts --strategy simulation --slot-offset 2 --rounds 10
 
-# Production mode -- see the "Production Setup" section below
-# PRIVATE_KEY=0x... bun run index.ts --strategy simulation --prod
+# Production mode is intentionally unavailable in the current branch.
 ```
 
 ### Included Strategies
@@ -76,11 +75,11 @@ bun run index.ts [options]
 |------|------|---------|-------------|
 | `-s, --strategy <name>` | string | First registered strategy | Strategy to run. |
 | `--slot-offset <n>` | positive integer | `1` | Which future market slot to pre-enter. `1` means the next upcoming slot, `2` means the slot after that. |
-| `--prod` | boolean flag | `false` | Run against the real Polymarket CLOB. Requires `PRIVATE_KEY`. Prompts for confirmation unless `FORCE_PROD=true`. |
+| `--prod` | disabled flag | `false` | Fails closed. Real exchange submission requires later promotion gates and separate explicit authorization. |
 | `--rounds <n>` | integer | unlimited | Number of market rounds to trade then exit. `0` means recover existing positions only (no new entries). Omit for unlimited. |
 | `--always-log` | boolean flag | `false` | Always write the per-market NDJSON log file even if no orders were placed (i.e. PnL is zero). Useful for debugging entry conditions and order book behavior in rounds where the strategy chose not to enter. |
 
-When `--prod` is confirmed, `process.env.PROD` is set to `"true"` so that strategies can check `Env.get("PROD")` at runtime.
+`--prod` currently exits before runtime construction. There is no environment-variable bypass.
 
 ---
 
@@ -93,12 +92,11 @@ When `--prod` is confirmed, `process.env.PROD` is set to `"true"` so that strate
 | `TICKER` | comma-separated list | `polymarket,coinbase` | Price sources for the asset ticker. Valid values: `polymarket`, `binance`, `coinbase`, `okx`, `bybit`. |
 | `MARKET_ASSET` | string | `"btc"` | Asset to trade. Valid values: `btc`, `eth`, `xrp`, `sol`, `doge`. |
 | `MARKET_WINDOW` | string | `"5m"` | Market window duration. `"5m"` for 5-minute markets, `"15m"` for 15-minute markets. Set before starting the engine -- cannot be changed while running. |
-| `PROD` | boolean string | `"false"` | Set automatically by `--prod`. Do not set manually. |
-| `PRIVATE_KEY` | string | `""` | Polygon wallet private key. Required for production mode. |
-| `POLY_FUNDER_ADDRESS` | string | `""` | Address of the funding wallet on Polymarket. |
+| `PROD` | boolean string | `"false"` | Historical input only; it does not grant submission authority. |
+| `PRIVATE_KEY` | string | `""` | Dormant exchange credential input. Do not populate for replay/paper work. |
+| `POLY_FUNDER_ADDRESS` | string | `""` | Dormant public funder-address input. |
 | `WALLET_BALANCE` | string | `"50"` | Simulated wallet balance in USD for paper trading. |
 | `MAX_SESSION_LOSS` | string | `"3"` | Maximum cumulative session loss (in USD) before the engine auto-shuts down. |
-| `FORCE_PROD` | boolean string | `"false"` | Set to `"true"` to skip the interactive production confirmation prompt. |
 
 ### Config Type (utils/config.ts)
 
@@ -183,12 +181,12 @@ Each market is a binary prediction market with two sides:
 
 | Side | Token Index | Resolves to 1.00 when |
 |------|-------------|----------------------|
-| UP | `clobTokenIds[0]` | Asset finishes above the price to beat |
-| DOWN | `clobTokenIds[1]` | Asset finishes below the price to beat |
+| UP | `clobTokenIds[0]` | BTC finishes greater than or equal to the Price to Beat |
+| DOWN | `clobTokenIds[1]` | BTC finishes below the Price to Beat |
 
 Prices range from `0.00` to `1.00`, representing the implied probability of that outcome.
 
-**Example:** You buy 100 shares of UP at `0.49` each (cost: $49.00). If the asset finishes above the price to beat, each share resolves to `1.00` and you receive $100.00 (profit: $51.00). If it finishes below, the shares resolve to `0.00` (loss: $49.00).
+**Example:** You buy 100 shares of UP at `0.49` each (cost: $49.00). If BTC finishes at or above the Price to Beat, each share resolves to `1.00` and you receive $100.00 (profit: $51.00). If it finishes below, the shares resolve to `0.00` (loss: $49.00).
 
 The market `slug` encodes the asset, market type, and slot end time. For example, `btc-updown-5m-1775241600` indicates a BTC up/down 5-minute market ending at Unix timestamp 1775241600. Change `MARKET_ASSET` to trade a different asset (e.g. `eth-updown-5m-1775241600` for ETH).
 
@@ -471,6 +469,7 @@ The engine computes PnL for each market round as follows:
 2. **Resolution-based PnL**: For any shares still held at market close, resolve based on the market outcome:
    - Winning side shares resolve at `1.00` per share.
    - Losing side shares resolve at `0.00` per share.
+   - For the current BTC five-minute rules, equality pays UP (`closePrice >= openPrice`).
 3. **Session PnL**: Accumulated across all rounds in the session.
 4. **Session Loss**: Tracked separately from session PnL. Only losing rounds (negative PnL) contribute to this counter -- winning rounds do not offset it. This means a session that wins $5 then loses $3 has a session PnL of +$2 but a session loss of -$3.
 
@@ -493,15 +492,15 @@ Each snapshot includes session PnL, session loss, all active market lifecycles (
 
 ### Graceful Shutdown
 
-The engine is designed to never abandon open positions. When a shutdown is triggered -- whether by `SIGINT` (Ctrl+C), `SIGTERM`, the session loss limit, or round exhaustion -- the engine does not exit immediately. Instead, it signals all active lifecycles to begin winding down. Lifecycles in the INIT state are discarded, but any lifecycle that has already reached RUNNING transitions to STOPPING, where it cancels pending buy orders and waits for open sell orders to fill before computing PnL and marking itself as DONE. The engine only exits once every lifecycle has fully settled.
+The engine attempts to wind down active lifecycles on shutdown. It cancels pending buys and waits for tracked sells before computing PnL.
 
-This means that if you press Ctrl+C while a sell order is still open on the exchange, the engine will hold the process alive and continue polling that order until it fills, expires, or the slot ends. If the slot ends with a sell still unfilled, the engine cancels it and lets the position resolve at market close (winning side pays 1.00, losing side pays 0.00). At no point does the engine silently drop an order or exit with untracked positions.
+This is not yet an authoritative reconciliation guarantee. `EarlyBird.stop()` has a bounded wait, and completion is not proved against all exchange open orders, wallet cash, and token balances. Treat “complete” as provisional until Phase B reconciliation closes P0-002 and P0-006.
 
 ### Crash Recovery
 
-If the engine crashes or is forcefully killed (e.g. `kill -9`), state recovery handles the gap. On the next startup, the engine loads the most recent state snapshot from disk and resumes tracking any pending orders that were active at the time of the crash. The orders themselves remain live on the Polymarket CLOB regardless of whether the engine is running -- the recovery process reconnects to them by ID and continues monitoring for fills and expirations.
+On startup, recovery reloads locally persisted order IDs and queries those IDs. It does not yet discover exchange-only orders or recover an ambiguous submission that was accepted but never persisted locally.
 
-However, callbacks registered by the strategy are not persisted, so any logic that was waiting inside an `onFilled` or `onExpired` handler will not fire for recovered orders. The engine will still cancel or settle them correctly, but chained strategy logic (such as placing a sell after a buy fills) will not resume. Design strategies with this in mind: the engine guarantees order-level safety, not callback-level continuity.
+Callbacks registered by the strategy are not persisted, so chained strategy logic does not resume after recovery. The engine does not yet guarantee order-level continuity across every crash boundary.
 
 ---
 
@@ -509,7 +508,7 @@ However, callbacks registered by the strategy are not persisted, so any logic th
 
 ### General
 
-- **Always test in simulation first.** Run at least 10 rounds (`--rounds 10`) before enabling production mode. Simulation uses a paper wallet controlled by the `WALLET_BALANCE` environment variable. The simulation environment mirrors real Polymarket behavior: it uses real order book data, simulates network delays and failures, and handles partial fills exactly how the exchange does. The goal is for a strategy that works in simulation to behave identically in production. Do not skip this step. Even a strategy that looks correct in code can behave unexpectedly against a live order book with real spread, slippage, and fill timing.
+- **Use simulation as plumbing evidence, not live-profit proof.** The paper wallet is controlled by `WALLET_BALANCE`, but fills, fees, queue position, latency, and partial fills are not yet proven identical to the exchange. Promotion requires the evidence ladder in `AI_WORKSPACE/CURRENT_STATE.md`.
 - **The strategy function is called once per market.** All subsequent logic must be driven by callbacks. Do not use long-running loops inside the strategy function -- use `ctx.hold()` combined with timer-based or event-based patterns instead.
 - **Return a cleanup function if your strategy creates timers.** Any `setTimeout` or `setInterval` handles should be tracked and cleared in a returned cleanup function. The engine calls it when the lifecycle is destroyed, preventing stale callbacks from firing after the market round is over.
 
@@ -576,105 +575,21 @@ ctx.postOrders([{
 
 ## Production Setup
 
-Production mode places real orders on Polymarket using real funds. Before enabling it, ensure you have completed the following steps.
+Production setup is intentionally unavailable. The `--prod` flag fails closed, `SessionManager` rejects `prod: true`, the runtime kernel rejects exchange-client selection, and the real client rejects order posting.
 
-### 1. Create a Polymarket Wallet
+Do not add wallet credentials to enable this branch. The next authorized live milestone is a proposed micro-live fill-calibration run only after Gates 0–4 pass. That proposal must state the exact bankroll, loss cap, order size, market cohort, hashes, and kill-switch behavior, then stop for separate user authorization.
 
-You need a Polygon-compatible wallet with a private key. This wallet will be used to sign and submit orders to the Polymarket CLOB. If you do not already have one, you can generate a wallet using any standard Ethereum wallet tool (e.g. MetaMask, `ethers.js`, `cast wallet new`).
-
-Fund the wallet with USDC on the Polygon network. This is the settlement currency on Polymarket.
-
-### 2. Obtain Builder API Credentials
-
-The engine uses Polymarket's gasless relayer to redeem resolved positions on-chain without paying gas fees. This requires a **Builder API key**, which is separate from your wallet private key.
-
-To obtain one:
-
-1. Log in to [polymarket.com](https://polymarket.com) and complete profile creation.
-2. Go to **Settings → Builder Codes**.
-3. Click **Create New** to generate a key/secret/passphrase triplet.
-4. Save all three values — the secret and passphrase are only shown once.
-
-### 3. Configure the .env File
-
-Create a `.env` file in the project root with the following variables:
-
-```env
-# Wallet private key (with 0x prefix). This signs all orders.
-PRIVATE_KEY=0x...
-
-# The Polymarket proxy/funder address associated with your account.
-# This is the address Polymarket uses to custody your funds on-chain.
-# You can find it in your Polymarket account settings or by inspecting
-# your deposit transaction on Polygonscan.
-POLY_FUNDER_ADDRESS=0x...
-
-# Builder API credentials for the gasless relayer (Settings > Builder Codes).
-# Required for on-chain redemption of resolved positions.
-BUILDER_KEY=...
-BUILDER_SECRET=...
-BUILDER_PASSPHRASE=...
-
-# Asset to trade. Options: btc, eth, xrp, sol, doge
-MARKET_ASSET=btc
-
-# Asset price sources. Comma-separated list of ticker providers.
-# Available: polymarket, binance, coinbase, okx, bybit
-TICKER=polymarket,coinbase
-
-# Maximum cumulative session loss (in USD) before auto-shutdown.
-MAX_SESSION_LOSS=3
-
-# Set to "true" to skip the interactive production confirmation prompt.
-# Useful for unattended/automated runs. Leave as "false" for safety.
-FORCE_PROD=false
-```
-
-### 4. Run in Production
-
-```bash
-bun run index.ts --strategy <your-strategy> --prod
-```
-
-The engine will prompt for confirmation:
-
-```
-Run in PRODUCTION mode with real funds? Enter Y to confirm:
-```
-
-Type `Y` to proceed. To bypass this prompt (e.g. for automated runs), set `FORCE_PROD=true` in your `.env` file.
-
-### 5. Strategy Production Guard
-
-Strategies can check whether they are running in production via `Env.get("PROD")`. The simulation strategies included in this repository block execution in production mode by design:
-
-```ts
-if (Env.get("PROD")) {
-  ctx.log("This strategy is for simulation only.", "red");
-  process.exit(1);
-}
-```
-
-When writing a production strategy, remove this guard and ensure your logic accounts for real funds, slippage, and exchange latency.
-
-### Production Checklist
-
-- Verify your wallet has sufficient USDC balance on Polygon.
-- Run your strategy in simulation for at least 10 rounds to validate behavior.
-- Set `MAX_SESSION_LOSS` to an appropriate value for your risk tolerance.
-- Confirm that `PRIVATE_KEY` and `POLY_FUNDER_ADDRESS` are correct and correspond to the same Polymarket account.
-- Confirm that `BUILDER_KEY`, `BUILDER_SECRET`, and `BUILDER_PASSPHRASE` are set (required for on-chain redemption).
-- Do not commit your `.env` file to version control. The `.gitignore` already excludes it.
+The current blocker list is maintained in [AI_WORKSPACE/ISSUE_LOG.md](../AI_WORKSPACE/ISSUE_LOG.md).
 
 ---
 
 ## Redemption
 
-When a market resolves, winning token holders must redeem their positions on-chain to convert them back to USDC. The engine handles this automatically for strategies that hold positions to resolution, and a standalone batch script is provided for manual or retroactive redemptions.
+Redemption is a dormant legacy production capability and is not part of the currently authorized replay/paper modes. Do not run state-changing redemption commands as part of Phase A or Phase B work.
 
 ### Auto-Redeem (Engine)
 
-When a lifecycle completes and transitions to DONE, the engine automatically calls `redeemPositions` on-chain for the resolved market — but only in production mode (`PROD=true`) and only when the lifecycle went through `_waitForResolution` (i.e. the strategy held a position to market close rather than selling it).
+The legacy production path contains automatic `redeemPositions` behavior for held-to-resolution positions. That path is unreachable through the current fail-closed runtime.
 
 Redemption uses Polymarket's gasless relayer (`relayer-v2.polymarket.com`), so no MATIC is required. If redemption fails (e.g. already redeemed, network error), the error is logged and the lifecycle still transitions to DONE — it does not block shutdown.
 
@@ -696,7 +611,7 @@ bun scripts/redeem.ts
 
 The script uses `POLY_FUNDER_ADDRESS` to look up positions and `BUILDER_KEY/SECRET/PASSPHRASE` to authenticate with the relayer. Both must be set in `.env`.
 
-Run this script periodically (e.g. after each session) to ensure resolved positions are converted back to USDC.
+Do not run the non-dry-run form without a separate, explicit request to perform that on-chain operation.
 
 ---
 

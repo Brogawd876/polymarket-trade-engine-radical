@@ -108,10 +108,8 @@ export default function LiveReadiness() {
     const activePreset = presets.find(preset => preset.id === selectedPreset);
     const activeEvidence = useMemo(() => evidenceRows.filter(row => row.presetId === selectedPreset), [evidenceRows, selectedPreset]);
     const hasCleanPaperEvidence = activeEvidence.some(row => row.status === 'completed' && row.problems === 0 && row.fills > 0 && row.decisionSnapshots > 0 && row.pnl >= 0);
-    const hasReplayEvidence = activePreset?.promotionStatus === 'paper_candidate' || activePreset?.promotionStatus === 'tiny_live_candidate' || activePreset?.promotionStatus === 'replay_candidate';
-    const hasPaperApproval = activePreset?.riskProfile === 'paper' || activePreset?.riskProfile === 'tiny-live';
-    const canPromoteTinyCandidate = Boolean(activePreset && hasReplayEvidence && hasPaperApproval && hasCleanPaperEvidence && activePreset.promotionStatus === 'paper_candidate');
-    const canUnlockTinyLive = activePreset?.promotionStatus === 'tiny_live_candidate' && activePreset.riskProfile === 'paper';
+    const hasReplayEvidence = activePreset?.promotionStatus === 'paper_candidate' || activePreset?.promotionStatus === 'replay_candidate';
+    const hasPaperApproval = activePreset?.riskProfile === 'paper';
 
     useEffect(() => {
         void loadAll();
@@ -228,34 +226,15 @@ export default function LiveReadiness() {
         await loadAll();
     }
 
-    async function promotePaperCandidate() {
-        if (!selectedPreset) return;
-        const response = await fetch(`${API_BASE}/strategy/presets/${encodeURIComponent(selectedPreset)}/promote-paper-candidate`, { method: 'POST' });
-        const data = await response.json();
-        setMessage(data.success ? `Preset ${data.preset.label} is now a tiny-live candidate.` : data.error);
-        await loadAll();
-    }
-
-    async function unlockTinyLive() {
-        const response = await fetch(`${API_BASE}/operator/tiny-live/unlock`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ presetId: selectedPreset, operatorAck: true }),
-        });
-        const data = await response.json();
-        setMessage(data.success ? 'Tiny-live unlocked for this preset with ultra-tiny caps.' : data.error);
-        await loadAll();
-    }
-
     return (
         <div className="p-8 max-w-7xl mx-auto space-y-6">
             <header className="flex items-start justify-between gap-4">
                 <div>
                     <h1 className="text-3xl font-bold text-slate-100 flex items-center gap-3">
                         <ShieldAlert className="w-8 h-8 text-emerald-400" />
-                        Live Readiness
+                        Strategy Readiness
                     </h1>
-                    <p className="text-slate-400 mt-2">Build strategy modules, promote presets, tune paper behavior, and guard tiny-live unlocks.</p>
+                    <p className="text-slate-400 mt-2">Build replay-only modules, evaluate fixtures, and tune paper behavior. Live promotion is unavailable.</p>
                 </div>
                 <button onClick={loadAll} className="h-10 w-10 rounded border border-slate-700 bg-slate-800 inline-flex items-center justify-center text-slate-300" title="Refresh">
                     <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -347,7 +326,7 @@ export default function LiveReadiness() {
                 </section>
 
                 <section className="bg-slate-800 border border-slate-700 rounded-lg p-5 space-y-4">
-                    <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2"><Lock className="w-5 h-5 text-emerald-400" /> Promotion & Tiny-Live Guard</h2>
+                    <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2"><Lock className="w-5 h-5 text-emerald-400" /> Paper Evidence & Promotion Boundary</h2>
                     <div className="grid gap-3">
                         <div className="rounded border border-slate-700 bg-slate-900/40 p-3 flex items-center justify-between">
                             <span className="text-slate-300">Replay evidence exists</span>
@@ -361,8 +340,8 @@ export default function LiveReadiness() {
                             <span className="text-slate-300">Clean paper evidence exists</span>
                             <CheckCircle2 className={`w-5 h-5 ${hasCleanPaperEvidence ? 'text-emerald-400' : 'text-slate-600'}`} />
                         </div>
-                        <div className="rounded border border-slate-700 bg-slate-900/40 p-3 text-sm text-slate-300">
-                            Ultra-tiny caps: $1/order | $5 exposure | $5 loss | strict feed and close-window gates.
+                        <div className="rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+                            Gate 0 is unpassed. Live promotion metadata, unlocks, and submission remain disabled and require a future separate authorization design.
                         </div>
                     </div>
                     <div className="rounded border border-slate-700 bg-slate-900/40 p-3">
@@ -382,12 +361,6 @@ export default function LiveReadiness() {
                             {activeEvidence.length === 0 && <div className="text-xs text-slate-500">No paper evidence recorded for this preset yet.</div>}
                         </div>
                     </div>
-                    <button onClick={promotePaperCandidate} disabled={!canPromoteTinyCandidate} className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 rounded font-bold text-white">
-                        Promote to Tiny-Live Candidate
-                    </button>
-                    <button onClick={unlockTinyLive} disabled={!canUnlockTinyLive} className="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-40 rounded font-bold text-white">
-                        Explicitly Unlock Tiny-Live
-                    </button>
                 </section>
             </div>
         </div>

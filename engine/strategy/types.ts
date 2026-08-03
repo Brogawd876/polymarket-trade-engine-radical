@@ -21,7 +21,7 @@ export type OrderRequest = {
     action: "buy" | "sell";
     price: number;
     shares: number;
-    orderType?: "GTC" | "FOK";
+    orderType?: "GTC" | "FAK" | "FOK";
   };
   /** Unix timestamp (ms) after which the order should be cancelled. Compared against `Date.now()`. */
   expireAtMs: number;

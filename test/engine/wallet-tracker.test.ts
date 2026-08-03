@@ -69,6 +69,17 @@ describe("onBuyFilled", () => {
     expect(t.balance).toBeCloseTo(8.5); // 10 - 1.5
     expect(t.availableShares(UP)).toBe(3);
   });
+
+  test("partial fill retains only the unfilled buy reservation", () => {
+    const t = makeTracker(10);
+    t.lockForBuy("o1", 0.5, 6, "test");
+    t.onBuyFilled("o1", UP, 0.5, 2);
+    expect(t.balance).toBeCloseTo(9);
+    expect(t.available).toBeCloseTo(7);
+    expect(t.availableShares(UP)).toBe(2);
+    t.unlockBuy("o1", "confirmed cancel");
+    expect(t.available).toBeCloseTo(9);
+  });
 });
 
 describe("canPlaceSell", () => {
@@ -145,6 +156,17 @@ describe("onSellFilled", () => {
       /sell fill exceeds held shares/,
     );
     expect(t.availableShares(UP)).toBe(2);
+  });
+
+  test("partial sell fill retains only the live remainder reservation", () => {
+    const t = makeTracker(10);
+    t.lockForBuy("o1", 0.5, 6, "test");
+    t.onBuyFilled("o1", UP, 0.5, 6);
+    t.lockForSell("s1", UP, 6, "test");
+    t.onSellFilled("s1", UP, 0.6, 2);
+    expect(t.availableShares(UP)).toBe(0);
+    t.unlockSell("s1", "confirmed cancel");
+    expect(t.availableShares(UP)).toBe(4);
   });
 });
 

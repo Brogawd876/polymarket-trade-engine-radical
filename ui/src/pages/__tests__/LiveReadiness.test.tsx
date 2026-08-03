@@ -59,7 +59,7 @@ describe('LiveReadiness', () => {
         }) as typeof fetch;
 
         const view = render(<LiveReadiness />);
-        expect(await view.findByText('Live Readiness')).toBeTruthy();
+        expect(await view.findByText('Strategy Readiness')).toBeTruthy();
         expect((await view.findAllByText('simulation')).length).toBeGreaterThan(0);
         fireEvent.change(view.getByDisplayValue(/export const module/), { target: { value: 'export const module = {};' } });
         fireEvent.click(view.getByText('Validate & Save Replay-Only Module'));

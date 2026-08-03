@@ -30,7 +30,7 @@ async function run() {
     try {
         console.log("\nDeriving API Key...");
         const creds = await client.createOrDeriveApiKey(0);
-        console.log("Derived API Key:", creds.key);
+        console.log("Derived API credentials successfully (values redacted)");
 
         const authClient = new ClobClient({
             host: "https://clob.polymarket.com",
@@ -43,7 +43,10 @@ async function run() {
 
         console.log("\nFetching all API keys for this signer...");
         const keys = await authClient.getApiKeys();
-        console.log("API Keys:", JSON.stringify(keys, null, 2));
+        console.log(
+          "API credential profiles found:",
+          Array.isArray(keys) ? keys.length : "response received",
+        );
 
         console.log("\nChecking Balance Allowance...");
         const balance = await authClient.getBalanceAllowance({

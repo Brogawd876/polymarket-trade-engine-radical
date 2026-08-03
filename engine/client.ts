@@ -65,8 +65,12 @@ export type MultiOrderRequest = {
   shares: number;
   tickSize: string;
   negRisk: boolean;
-  feeRateBps: number; // deprecated field not used in v2
-  orderType?: "GTC" | "FOK" | "GTD";
+  /** Compatibility-only observation; never serialized into a V2 order. */
+  feeRateBps?: number;
+  orderType?: "GTC" | "FAK" | "FOK" | "GTD";
+  /** GTC defaults to post-only; immediate order types cannot be post-only. */
+  postOnly?: boolean;
+  clientCorrelationId?: string;
   expiration?: number; // seconds from now
 };
 
@@ -75,11 +79,38 @@ export type PlacedOrder = {
   status: string;
   success: boolean;
   errorMsg: string;
+  clientCorrelationId?: string;
+  takingAmount?: string;
+  makingAmount?: string;
+  tradeIds?: string[];
+  transactionHashes?: string[];
+};
+
+export type ClobMarketInfo = {
+  conditionId: string;
+  tokens: Array<{ tokenId: string; outcome: string }>;
+  acceptingOrders: boolean;
+  minimumOrderSize: string;
+  tickSize: string;
+  negRisk: boolean;
+  makerBaseFeeBps: string;
+  takerBaseFeeBps: string;
+  feeDetails: {
+    rate: string;
+    exponent: string;
+    takerOnly: boolean;
+  };
+  takerOrderDelayEnabled: boolean;
+  minimumOrderAgeSeconds: number | null;
 };
 
 export interface EarlyBirdClient {
   init(): Promise<void>;
   postMultipleOrders(orders: MultiOrderRequest[]): Promise<PlacedOrder[]>;
+  getMarketStatus(
+    conditionId: string,
+  ): Promise<{ itode?: boolean } | null>;
+  getClobMarketInfo?(conditionId: string): Promise<ClobMarketInfo>;
   getOpenOrderIds(conditionId: string): Promise<Set<string>>;
   getOrderById(orderId: string): Promise<Order | null>;
   cancelOrder(orderId: string): Promise<void>;
@@ -88,7 +119,7 @@ export interface EarlyBirdClient {
   restoreOrder(order: Order): void;
 
   /** Safety & Heartbeat */
-  sendHeartbeat(): Promise<void>;
+  sendHeartbeat(): Promise<string | void>;
 
   /** Balance API */
   getUSDCBalance(): Promise<number>;
@@ -235,18 +266,36 @@ export class EarlyBirdSimClient implements EarlyBirdClient {
         }
       }
 
-      // FOK: fill immediately or reject — matches real CLOB behavior
-      if (req.orderType === "FOK") {
+      // FOK/FAK: immediate execution. FAK may keep only the executable part.
+      if (req.orderType === "FOK" || req.orderType === "FAK") {
         const book = this.getBook(req.tokenId);
         if (this._checkFill(req, book)) {
           const orderId = crypto.randomUUID();
+          let actualShares = req.shares;
+          if (
+            req.orderType === "FAK" &&
+            book &&
+            "bids" in book &&
+            "asks" in book
+          ) {
+            const levels =
+              req.action === "buy" ? book.asks : book.bids;
+            const executable = levels
+              .filter(([price]) =>
+                req.action === "buy"
+                  ? price <= req.price
+                  : price >= req.price,
+              )
+              .reduce((sum, [, size]) => sum + size, 0);
+            actualShares = Math.min(req.shares, executable);
+          }
           this._orders.set(orderId, {
             id: orderId,
             tokenId: req.tokenId,
             action: req.action,
             price: req.price,
             shares: req.shares,
-            actualShares: req.shares,
+            actualShares,
             status: "filled",
           });
           if (req.action === "buy") {
@@ -262,7 +311,9 @@ export class EarlyBirdSimClient implements EarlyBirdClient {
           status: "",
           success: true,
           errorMsg:
-            "order couldn't be fully filled. FOK orders are fully filled or killed.",
+            req.orderType === "FOK"
+              ? "order couldn't be fully filled. FOK orders are fully filled or killed."
+              : "order could not be immediately filled. FAK remainder canceled.",
         };
       }
 
@@ -304,6 +355,28 @@ export class EarlyBirdSimClient implements EarlyBirdClient {
       }
     }
     return openIds;
+  }
+
+  async getMarketStatus(
+    _conditionId: string,
+  ): Promise<{ itode?: boolean } | null> {
+    return null;
+  }
+
+  async getClobMarketInfo(conditionId: string): Promise<ClobMarketInfo> {
+    return {
+      conditionId,
+      tokens: [],
+      acceptingOrders: true,
+      minimumOrderSize: "1",
+      tickSize: "0.01",
+      negRisk: false,
+      makerBaseFeeBps: "0",
+      takerBaseFeeBps: "0",
+      feeDetails: { rate: "0", exponent: "2", takerOnly: true },
+      takerOrderDelayEnabled: false,
+      minimumOrderAgeSeconds: null,
+    };
   }
 
   async getOrderById(orderId: string): Promise<Order | null> {
@@ -416,12 +489,13 @@ function mapStatus(status: string): Order["status"] {
 }
 
 export class PolymarketEarlyBirdClient implements EarlyBirdClient {
-  clob!: ClobClient;
+  private clob!: ClobClient;
   private readonly _host = "https://clob.polymarket.com";
   private readonly _signer: Wallet;
   private readonly _funder: string | undefined;
   private readonly _signatureType: number;
   private readonly _builderConfig: BuilderConfig | null = null;
+  private readonly _exchangeSubmissionEnabled = false;
   private _creds: { key: string; secret: string; passphrase: string } | null =
     null;
 
@@ -519,10 +593,24 @@ export class PolymarketEarlyBirdClient implements EarlyBirdClient {
     return this._creds;
   }
 
+  async buildSignedOrderForVerification(
+    order: UserOrder,
+    options: { tickSize: TickSize; negRisk: boolean },
+    version = 2,
+  ) {
+    return this.clob.orderBuilder.buildOrder(order, options, version);
+  }
+
   // Optimized way of posting multiple orders without making many API calls
   async postMultipleOrders(
     orders: MultiOrderRequest[],
   ): Promise<PlacedOrder[]> {
+    if (!this._exchangeSubmissionEnabled) {
+      throw new Error(
+        "live exchange submission is disabled pending Gate 5 evidence and separate explicit authorization",
+      );
+    }
+
     // Sign all orders in parallel, passing pre-fetched options to skip network calls
     // This is fully offline
     const signed = await Promise.all(
@@ -549,10 +637,27 @@ export class PolymarketEarlyBirdClient implements EarlyBirdClient {
       }),
     );
 
+    const postOnlyModes = orders.map(
+      (order) => order.postOnly ?? (order.orderType ?? "GTC") === "GTC",
+    );
+    if (new Set(postOnlyModes).size !== 1) {
+      throw new Error("mixed post-only and immediate orders require separate batches");
+    }
+    if (
+      orders.some(
+        (order) =>
+          (order.orderType === "FAK" || order.orderType === "FOK") &&
+          (order.postOnly ?? false),
+      )
+    ) {
+      throw new Error("FAK/FOK orders cannot be post-only");
+    }
+
     const resp = await this.clob.postOrders(
       signed.map((order, i) => {
         let orderType = ClobOrderType.GTC;
         if (orders[i]!.orderType === "FOK") orderType = ClobOrderType.FOK;
+        if (orders[i]!.orderType === "FAK") orderType = ClobOrderType.FAK;
         if (orders[i]!.orderType === "GTD") orderType = ClobOrderType.GTD;
 
         return {
@@ -560,6 +665,7 @@ export class PolymarketEarlyBirdClient implements EarlyBirdClient {
           orderType,
         };
       }),
+      postOnlyModes[0] ?? true,
     );
 
     if (!Array.isArray(resp)) {
@@ -580,17 +686,64 @@ export class PolymarketEarlyBirdClient implements EarlyBirdClient {
       status: string;
       success: boolean;
       errorMsg: string;
-    }>).map((r) => ({
+      takingAmount?: string;
+      makingAmount?: string;
+      tradeIDs?: string[];
+      transactionsHashes?: string[];
+    }>).map((r, index) => ({
       orderId: r.orderID,
       status: r.status,
       success: r.success,
       errorMsg: r.errorMsg,
+      clientCorrelationId: orders[index]?.clientCorrelationId,
+      takingAmount: r.takingAmount,
+      makingAmount: r.makingAmount,
+      tradeIds: r.tradeIDs,
+      transactionHashes: r.transactionsHashes,
     }));
   }
 
   async getOpenOrderIds(conditionId: string): Promise<Set<string>> {
     const orders = await this.clob.getOpenOrders({ market: conditionId });
     return new Set(orders.map((o) => o.id));
+  }
+
+  async getMarketStatus(
+    conditionId: string,
+  ): Promise<{ itode?: boolean } | null> {
+    try {
+      const market = await this.clob.getMarket(conditionId);
+      return market ? { itode: Boolean(market.itode) } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async getClobMarketInfo(conditionId: string): Promise<ClobMarketInfo> {
+    const info = await this.clob.getClobMarketInfo(conditionId);
+    return {
+      conditionId,
+      tokens: info.t.map((token) => ({
+        tokenId: token.t,
+        outcome: token.o,
+      })),
+      acceptingOrders: info.ao === true,
+      minimumOrderSize: String(info.mos ?? ""),
+      tickSize: String(info.mts),
+      negRisk: info.nr === true,
+      makerBaseFeeBps: String(info.mbf ?? "0"),
+      takerBaseFeeBps: String(info.tbf ?? "0"),
+      feeDetails: {
+        rate: String(info.fd?.r ?? "0"),
+        exponent: String(info.fd?.e ?? "0"),
+        takerOnly: info.fd?.to === true,
+      },
+      takerOrderDelayEnabled: info.itode === true,
+      minimumOrderAgeSeconds:
+        typeof (info as unknown as { oas?: unknown }).oas === "number"
+          ? (info as unknown as { oas: number }).oas
+          : null,
+    };
   }
 
   async getOrderById(orderId: string): Promise<Order | null> {
@@ -625,14 +778,14 @@ export class PolymarketEarlyBirdClient implements EarlyBirdClient {
   restoreOrder(_order: Order): void {}
 
   /** Safety & Heartbeat */
-  async sendHeartbeat(): Promise<void> {
-    try {
-      await (this.clob as any).postHeartbeat();
-    } catch (err: any) {
-      console.error(
-        `[Heartbeat] Failed to send heartbeat: ${err.response?.data?.error || err.message}`,
+  async sendHeartbeat(): Promise<string> {
+    const response = await this.clob.postHeartbeat();
+    if (!response?.heartbeat_id || response.error_msg) {
+      throw new Error(
+        `heartbeat failed: ${response?.error_msg ?? "missing heartbeat id"}`,
       );
     }
+    return response.heartbeat_id;
   }
 
   async getUSDCBalance(): Promise<number> {

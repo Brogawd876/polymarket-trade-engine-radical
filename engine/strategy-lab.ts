@@ -17,6 +17,7 @@ import { ConservativeFillScorer, type FillScoreResult } from "./replay/fill-scor
 import { extractClobTokenIdsFromRawL2 } from "./replay/paired-token-mapping.ts";
 import type { DecisionFeatureSnapshot } from "./decision-features.ts";
 import type { CounterfactualRiskMode } from "./replay/counterfactual-risk-gate.ts";
+import { NoopEventWriter } from "./event-store/writer.ts";
 
 export type StrategyLabBatchState = "queued" | "running" | "completed" | "failed" | "canceled";
 export type StrategyLabRunStatus = "queued" | "running" | "completed" | "failed" | "canceled";
@@ -975,6 +976,14 @@ export class StrategyLabBatchManager {
       try {
         const clock = new VirtualClock();
         const sink = new CollectingTelemetrySink();
+        // Strategy Lab runs virtual time much faster than wall time. Keep the
+        // run's event journal in memory so filesystem latency cannot let the
+        // virtual clock pass an order's expiry while placement is awaiting the
+        // intent write. The writer still captures and validates every envelope.
+        const eventWriter = new NoopEventWriter({
+          runId: `strategy-lab-${run.id}`,
+          nowMs: () => clock.nowMs(),
+        });
         const l2File = batch.l2Files?.[run.file];
         const tokenMapping = l2File ? extractClobTokenIdsFromRawL2(l2File) : null;
         
@@ -994,6 +1003,7 @@ export class StrategyLabBatchManager {
           clock,
           persistState: false,
           telemetry: sink,
+          eventWriter,
           marketLogMode: "disabled",
           replayVenueMetadata: tokenMapping?.status === "ok"
             ? { clobTokenIds: tokenMapping.tokenIds }

@@ -148,6 +148,7 @@ export type ExecutionPayload = {
   action?: "buy" | "sell" | "cancel";
   price?: number;
   shares?: number;
+  remainingShares?: number;
   orderType?: string;
   status?: string;
   makerTaker?: "maker" | "taker" | "unknown";

@@ -27,7 +27,7 @@ async function main() {
   console.log(`Market slug: ${market.slug}`);
   console.log(`Token ID: ${market.chosenTokenId}`);
 
-  const order = await client.clob.orderBuilder.buildOrder(
+  const order = await client.buildSignedOrderForVerification(
     {
       tokenID: market.chosenTokenId,
       price: 0.01,

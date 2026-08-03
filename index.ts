@@ -1,5 +1,4 @@
 import { Command } from "commander";
-import * as readline from "readline";
 import { strategies, DEFAULT_STRATEGY, strategyVariants } from "./engine/strategy/index.ts";
 import { acquireProcessLock } from "./utils/process-lock.ts";
 import { validateContracts } from "./utils/contracts.ts";
@@ -31,7 +30,7 @@ const program = new Command()
   )
   .option(
     "--prod",
-    "Run against the real Polymarket CLOB (requires PRIVATE_KEY)",
+    "Disabled: real Polymarket CLOB submission is not authorized",
   )
   .option(
     "--rounds <n>",
@@ -79,6 +78,13 @@ const opts = program.opts<{
   idle?: boolean;
 }>();
 
+if (opts.prod) {
+  console.error(
+    "Live exchange submission is disabled pending Gate 5 evidence and separate explicit authorization.",
+  );
+  process.exit(1);
+}
+
 acquireProcessLock("early-bird");
 validateContracts({
   requireSettlementReferenceVerification:
@@ -89,29 +95,6 @@ if (!strategies[opts.strategy] && !strategyVariants[opts.strategy] && !opts.idle
   console.error(`Unknown strategy: "${opts.strategy}"`);
   console.error(`Available: ${Object.keys(strategies).join(", ")}, ${Object.keys(strategyVariants).join(", ")}`);
   process.exit(1);
-}
-
-if (opts.prod && process.env.FORCE_PROD !== "true" && !opts.idle) {
-  const answer = await new Promise<string>((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-    rl.question(
-      "Run in PRODUCTION mode with real funds? Enter Y to confirm: ",
-      (ans) => {
-        rl.close();
-        resolve(ans);
-      },
-    );
-  });
-
-  if (answer !== "Y") {
-    console.log("Aborted.");
-    process.exit(0);
-  }
-
-  process.env.PROD = "true";
 }
 
 // Telemetry & Control Plane

@@ -36,6 +36,7 @@ type Tracked = {
   matched: boolean;
   associatedTrades: Set<string>;
   minedAmounts: Map<string, number>; // tradeId -> amount credited to this order
+  reportedAmount: number;
 };
 
 type OrderEvent = {
@@ -75,6 +76,7 @@ abstract class UserChannelBase implements UserChannel {
       matched: (bufferedMatched?.size ?? 0) > 0,
       associatedTrades: bufferedMatched ?? new Set(),
       minedAmounts: bufferedMined ?? new Map(),
+      reportedAmount: 0,
     });
     this._pendingTradeAmounts.delete(orderId);
     this._pendingMatchedTrades.delete(orderId);
@@ -92,9 +94,9 @@ abstract class UserChannelBase implements UserChannel {
   getMatchedSoFar(orderId: string): number {
     const t = this.tracked.get(orderId);
     if (!t) return 0;
-    let sum = 0;
-    for (const v of t.minedAmounts.values()) sum += v;
-    return sum;
+    let pending = 0;
+    for (const v of t.minedAmounts.values()) pending += v;
+    return t.reportedAmount + pending;
   }
 
   isMatched(orderId: string): boolean {
@@ -185,10 +187,22 @@ abstract class UserChannelBase implements UserChannel {
     const t = this.tracked.get(orderId);
     if (!t || !t.matched) return;
     if (t.minedAmounts.size < t.associatedTrades.size) return;
-    let total = 0;
-    for (const v of t.minedAmounts.values()) total += v;
-    this.tracked.delete(orderId);
-    t.request.onFilled?.(total);
+    let newlyMined = 0;
+    for (const v of t.minedAmounts.values()) newlyMined += v;
+    if (newlyMined <= 0) return;
+
+    t.reportedAmount += newlyMined;
+    t.matched = false;
+    t.associatedTrades.clear();
+    t.minedAmounts.clear();
+
+    const requested = t.request.req.shares;
+    if (t.reportedAmount + 1e-9 >= requested) {
+      this.tracked.delete(orderId);
+    }
+    // Report the incremental fill. A resting GTC stays tracked until its
+    // requested quantity is fully mined or a cancellation is confirmed.
+    t.request.onFilled?.(newlyMined);
   }
 }
 
@@ -282,7 +296,11 @@ export class PolymarketUserChannel extends UserChannelBase {
       },
       onerror: () => {
         this._isReady = false;
-      }
+      },
+      onclose: () => {
+        this._isReady = false;
+        this._clearPing();
+      },
     });
   }
 
@@ -354,7 +372,7 @@ export class SimUserChannel extends UserChannelBase {
   }
 
   private _checkFill(
-    order: { action: "buy" | "sell"; price: number; shares: number; orderType?: "GTC" | "FOK" },
+    order: { action: "buy" | "sell"; price: number; shares: number; orderType?: "GTC" | "FAK" | "FOK" },
     bookData: FillModelBook | BookSnapshot | null,
   ): boolean {
     if (!bookData) return false;
