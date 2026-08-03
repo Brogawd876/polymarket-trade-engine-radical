@@ -44,6 +44,7 @@ describe("ChainlinkResolutionAdapter", () => {
 
     expect(event?.sourceType).toBe("chainlink_polygon");
     expect(event?.price).toBe(1001.23456789);
+    expect(event?.exactPrice).toBe("1001.23456789");
     expect(event?.rawOracleAnswer).toBe("100123456789");
     expect(event?.roundId).toBe("10");
     expect(event?.chainUpdatedAtMs).toBe(1778891401_000);

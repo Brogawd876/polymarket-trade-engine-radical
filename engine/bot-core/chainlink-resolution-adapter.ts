@@ -309,6 +309,7 @@ export class ChainlinkResolutionAdapter
       receivedAtMs: localReceivedAtMs,
       processedAtMs: localReceivedAtMs,
     });
+    const exactPrice = formatUnits(round.answer, decimals);
 
     return {
       id: `chainlink-polygon-btc-usd-${round.roundId.toString()}`,
@@ -317,7 +318,8 @@ export class ChainlinkResolutionAdapter
       sourceType: "chainlink_polygon",
       asset: this.asset,
       kind: "live",
-      price: Number(formatUnits(round.answer, decimals)),
+      exactPrice,
+      price: Number(exactPrice),
       rawOracleAnswer: round.answer.toString(),
       roundId: round.roundId.toString(),
       answeredInRound: round.answeredInRound.toString(),

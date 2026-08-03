@@ -62,9 +62,10 @@ describe("Type 3 account model guardrails", () => {
     expect(Number(order.signatureType)).toBe(3);
   });
 
-  test("active sample config keeps the proven funder placeholder and blocks old funders", async () => {
+  test("active sample config is credential-free and blocks old funders", async () => {
     const envSample = await Bun.file(".env.sample").text();
-    expect(envSample).toContain("POLY_FUNDER_ADDRESS=0xYOUR_DEPOSIT_WALLET_HERE");
+    expect(envSample).toMatch(/^PRIVATE_KEY=$/m);
+    expect(envSample).toMatch(/^POLY_FUNDER_ADDRESS=$/m);
     for (const wrong of WRONG_FUNDERS) {
       expect(envSample).not.toContain(`POLY_FUNDER_ADDRESS=${wrong}`);
     }

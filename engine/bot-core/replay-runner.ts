@@ -190,11 +190,28 @@ export class ReplayRunner {
       while (!this.reader.isDone() || this.bot.activeLifecycleCount > 0) {
         const nextEventTs = this.reader.peekNextTs();
         const nextTickTargetMs = this.clock.nowMs() + TICK_INTERVAL_MS;
+        const stateBeforeAdvance = this.bot.replayStateSummary();
+        const waitingOnlyForRecordedSettlement =
+          this.bot.activeLifecycleCount > 0 &&
+          stateBeforeAdvance
+            .split(", ")
+            .every((state) => /:STOPPING\(pending=0\)$/.test(state));
 
         let targetNowMs: number;
+        // Once every lifecycle is stopped with no exchange remainder, the only
+        // legitimate progress can come from recorded settlement evidence.
+        // Jumping to the next immutable input avoids fabricating thousands of
+        // empty ticks or falsely declaring a long-delayed settlement a stall.
+        if (
+          waitingOnlyForRecordedSettlement &&
+          nextEventTs !== null &&
+          nextEventTs > nextTickTargetMs
+        ) {
+          targetNowMs = nextEventTs;
+        }
         // If there's an event before our next tick, we jump to it exactly.
         // This ensures the virtual clock is perfectly aligned with data received timestamps.
-        if (nextEventTs !== null && nextEventTs <= nextTickTargetMs) {
+        else if (nextEventTs !== null && nextEventTs <= nextTickTargetMs) {
           targetNowMs = nextEventTs;
         } else {
           targetNowMs = nextTickTargetMs;
@@ -237,7 +254,9 @@ export class ReplayRunner {
              } else {
                 const nextDeadlineMs = this.bot.nextReplayDeadlineMs?.() ?? null;
                 const waitingForKnownDeadline =
-                  nextDeadlineMs !== null && this.clock.nowMs() <= nextDeadlineMs;
+                  (nextDeadlineMs !== null &&
+                    this.clock.nowMs() <= nextDeadlineMs) ||
+                  (nextEventTs !== null && this.clock.nowMs() <= nextEventTs);
                 if (
                   this.clock.nowMs() - lastProgressMs > this.stallTimeoutMs &&
                   !waitingForKnownDeadline
@@ -246,6 +265,20 @@ export class ReplayRunner {
                  throw new Error("Replay stalled");
                 }
              }
+          }
+
+          const afterTickStates = this.bot.replayStateSummary();
+          if (
+            this.reader.isDone() &&
+            this.bot.activeLifecycleCount > 0 &&
+            afterTickStates
+              .split(", ")
+              .every((state) => /:STOPPING\(pending=0\)$/.test(state)) &&
+            (this.bot.nextReplayDeadlineMs?.() ?? null) === null
+          ) {
+            throw new Error(
+              "replay ended without explicit settlement evidence",
+            );
           }
 
           // Terminate if engine is done

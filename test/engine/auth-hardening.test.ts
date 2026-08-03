@@ -97,4 +97,35 @@ describe("Production Auth Hardening", () => {
     process.env.BUILDER_SECRET = "builder-secret";
     process.env.BUILDER_PASSPHRASE = "builder-passphrase";
   });
+
+  test("real order submission remains disabled even with valid credentials", async () => {
+    const client = new PolymarketEarlyBirdClient();
+
+    await expect(
+      client.postMultipleOrders([
+        {
+          tokenId: "123",
+          action: "buy",
+          price: 0.5,
+          shares: 5,
+          tickSize: "0.01",
+          negRisk: false,
+          feeRateBps: 0,
+          orderType: "GTC",
+        },
+      ]),
+    ).rejects.toThrow(/live exchange submission is disabled/);
+  });
+
+  test("historical acceptance script cannot bypass the exchange adapter", async () => {
+    const clientSource = await Bun.file("engine/client.ts").text();
+    const acceptanceSource = await Bun.file(
+      "scripts/final-acceptance-test.ts",
+    ).text();
+
+    expect(clientSource).toContain("private clob!: ClobClient");
+    expect(acceptanceSource).not.toMatch(/\.clob\.(postOrder|postOrders)/);
+    expect(acceptanceSource).not.toMatch(/\bpostOrder\s*\(/);
+    expect(acceptanceSource).toContain("No order was submitted");
+  });
 });

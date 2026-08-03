@@ -175,13 +175,11 @@ export function evaluateBlockedIntent(
 
   // 2. Hypothetical PnL
   if (record.wouldFill && settlement?.direction && record.side) {
-    const won = record.side === settlement.direction;
-    const tie = settlement.direction === "TIE";
-    if (tie) {
-      record.hypotheticalPnl = (0.5 - intent.price) * intent.shares;
-    } else {
-      record.hypotheticalPnl = (won ? 1 - intent.price : -intent.price) * intent.shares;
-    }
+    const resolvedDirection =
+      settlement.direction === "TIE" ? "UP" : settlement.direction;
+    const won = record.side === resolvedDirection;
+    record.hypotheticalPnl =
+      (won ? 1 - intent.price : -intent.price) * intent.shares;
   }
 
   // 3. Final Verdict

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, copyFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { StrategyLabBatchManager, type StrategyLabBatch } from "../../engine/strategy-lab.ts";
@@ -30,6 +30,17 @@ describe("Strategy Lab replay immutability", () => {
       const slug = "btc-updown-5m-1778898900";
       const placementTs = 1_778_898_605_239;
       copyFileSync(fixturePath, replayPath);
+      appendFileSync(
+        replayPath,
+        `${JSON.stringify({
+          ts: 1_778_899_200_100,
+          type: "resolution",
+          direction: "DOWN",
+          openPrice: 79_103.07630957205,
+          closePrice: 79_000,
+          syntheticTestEvidence: true,
+        })}\n`,
+      );
 
       writeNdjson(rawL2Path, [
         {

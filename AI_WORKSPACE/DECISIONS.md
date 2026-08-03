@@ -1,5 +1,123 @@
 # Decisions
 
+## 2026-08-02 — Stop at the evidence and authorization boundary
+
+### Decision
+
+Treat Phases A-H as implemented non-live architecture, keep the project at Gate 0 pending a formal evidence package, and do not infer Gates 1-4 from tests. Gates 5 and 6 remain unavailable without their separate explicit authorizations.
+
+### Reason
+
+Runtime correctness tests cannot substitute for sustained shadow data, chronological holdout calibration, realistic continuous-cohort economics, or live-data paper evidence. The master prompt explicitly requires those observations and forbids treating implementation authority as trading authorization.
+
+### Implications
+
+The next task is a zero-submission Gate 1 recorder/shadow run. No live order, cancel, or redemption action is permitted.
+
+## 2026-08-02 — Separate production authority from the quarantined legacy path
+
+### Decision
+
+Use the append-only journal, outbox, lifecycle, fixed-point lot ledger, reconciliation service, model registry, and deterministic exchange under `engine/production/` as the new authority. Keep the legacy runtime available only for replay/simulation compatibility while every real-exchange boundary remains disabled.
+
+### Reason
+
+Incrementally declaring `WalletTracker` and local state production-authoritative would preserve crash, precision, orphan, and false-complete defects. A separate composition makes authority explicit and testable without authorizing live activity.
+
+### Implications
+
+Only `ProductionTradingRuntime` represents the integrated new path, and its exchange type is restricted to `DeterministicFakeExchange`. Any future real transport requires prior gate evidence and a separately reviewed authorization design.
+
+## 2026-08-02 — Freeze the FVM v1.1.0 Raw/Ungated benchmark
+
+### Decision
+
+Preserve the exact repository-equivalent configuration through a distinct replay-only entry point and SHA-256 regression pins on its entry point and delegated implementation.
+
+### Reason
+
+The prior “benchmark” was a mutable variant over an evolving strategy implementation. That could silently rewrite the same-sample baseline and invalidate descendant comparisons.
+
+### Implications
+
+Do not edit the frozen implementation in place. Create a descendant and compare it on the same chronological cohort under the same execution assumptions. Historical replay PnL is not evidence of live profitability.
+
+## 2026-08-02 — Adopt current CLOB V2 semantics without enabling transport
+
+### Decision
+
+Pin `@polymarket/clob-client-v2@1.1.0` and `@polymarket/builder-relayer-client@0.0.10`, model GTC post-only and FAK/FOK behavior, consume dynamic tick/minimum/fee metadata, and reconcile ambiguous submissions by correlation evidence.
+
+### Reason
+
+The previous repository used incomplete/static exchange assumptions. Current behavior must be verified independently of whether live submission is authorized.
+
+### Implications
+
+The adapter and deterministic fake exchange can be tested in replay/paper. Real transport remains absent from the integrated runtime.
+
+## 2026-08-02 — Redemption precedes wallet settlement credit
+
+### Decision
+
+Do not credit the simulation wallet or clear inventory until redemption succeeds. A redemption failure marks the lifecycle invalid and blocks completion.
+
+### Reason
+
+The prior order credited payout before the redeem call, so a failed redemption could display cash and completion that had not been obtained.
+
+### Implications
+
+Failed redemption retains inventory and cash state, emits invalid evidence, and leaves the lifecycle in `STOPPING`.
+
+## 2026-08-02 — Phase A submission authority
+
+### Decision
+
+Real exchange submission is unavailable in the current branch. Replay and simulated paper execution remain available. Re-enabling submission requires later promotion-gate evidence and a separate explicit authorization design.
+
+### Reason
+
+The prior CLI confirmation could be bypassed by the operator simulation endpoint, and the repository does not meet Gate 0 lifecycle, ledger, reconciliation, or current CLOB V2 requirements.
+
+### Implications
+
+The CLI, `SessionManager`, `EarlyBird` runtime, `TradingKernel`, and real client all fail closed. Existing wallet credentials, prior live history, or `FORCE_PROD` are not authorization.
+
+## 2026-08-02 — Intent creation boundary
+
+### Decision
+
+Create one strategy intent at `StrategyContext.postOrders()` receipt, persist it before client submission, and reuse it across risk evaluation, retries, acknowledgement, and terminal state.
+
+### Reason
+
+Creating intents inside `_placeWithRetry()` allowed maintenance and other early gates to discard a strategy request without an intent, and retries generated unrelated IDs.
+
+### Implications
+
+Every requested order is traceable even when blocked before risk or submission. Phase B must make the subsequent execution command a durable outbox item.
+
+## 2026-08-02 — BTC 5m equality resolves UP
+
+### Decision
+
+For the current BTC Up/Down five-minute market family, equality resolves UP: `closePrice >= openPrice`.
+
+### Reason
+
+Current Polymarket market rules explicitly state “greater than or equal to.” The earlier repository decision and test asserted the opposite and were financially invalid.
+
+Authority checked 2026-08-02:
+
+- https://polymarket.com/event/btc-updown-5m-1777770000
+- https://docs.polymarket.com/trading/orders/create
+- https://docs.polymarket.com/api-reference/markets/get-clob-market-info
+
+### Implications
+
+Runtime settlement, counterfactual PnL, and settlement markouts treat a tie as UP. Rules must eventually be stored per market rather than hard-coded by family.
+
 ## Recent Decisions (FVM Audit & Churn Optimization)
 
 ### 1. Order Churn (Hysteresis & MOL)
@@ -14,9 +132,9 @@
 **Decision:** "MarketLifecycle" will only untrack an order from the user channel AFTER the exchange API confirms it is canceled.
 **Rationale:** Previously, if the cancel API failed, the order remained live on the exchange but was untracked locally, causing missed fills and permanently locked wallet reservations.
 
-### 4. Tie-Breaker Settlement
-**Decision:** Maintain "closePrice > openPrice" for UP to win.
-**Rationale:** Polymarket "Higher or Lower" binary markets require the asset to finish strictly higher for "Higher" (UP) to win. An exact tie resolves to Lower (DOWN). Tested and locked in.
+### 4. Tie-Breaker Settlement — SUPERSEDED 2026-08-02
+**Historical decision:** The repository previously used `closePrice > openPrice`.
+**Superseded because:** Current BTC Up/Down 5m rules explicitly resolve `closePrice >= openPrice` to UP.
 
 ### 5. Conservative Fill Default
 **Decision:** Simulation clients now default to "ConservativeMakerFillModel" ("requireTradeThrough").
@@ -457,16 +575,16 @@ The UI needs to be able to start, stop, and reset simulations and replays withou
 
 ### Implications
 
-- Operators must start the engine using un run index.ts --idle to run the control server without an immediate bot start.
+- Operators must start the engine using `bun run index.ts --idle` to run the control server without an immediate bot start.
 - EarlyBird does not process.exit(1) upon max loss; it throws an Error, which is presented gracefully in the OperatorControlPanel.
 
 ---
 
 ### 2026-05-18
 
-### Decision
+### Decision — SUPERSEDED 2026-08-02
 
-Keep ultra-tiny live mode UI-visible but execution-locked until paper evidence gates pass.
+Historical: keep ultra-tiny live mode UI-visible but execution-locked until paper evidence gates pass.
 
 ### Reason
 
@@ -474,7 +592,7 @@ The profitability roadmap allows capped tiny-live collection only as evidence, n
 
 ### Implications
 
-Control Center can display `$1/order`, `$5 exposure`, and `$5 loss` caps, but the tiny-live button remains locked and does not call a live trading endpoint. Future work must wire tiny-live only after deterministic replay, paper, and kill-switch gates are satisfied.
+Superseded because an operator endpoint persisted `riskProfile: "tiny-live"` after only an acknowledgement and minimal paper evidence. Phase A removes the arming controls, rejects live-promotion metadata, normalizes legacy saved values back to paper, and tombstones promotion/unlock routes. Future live authorization must be designed only after Gates 0–4 pass and must require a separate explicit user authorization.
 
 ---
 

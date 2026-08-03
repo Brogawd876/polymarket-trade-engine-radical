@@ -86,7 +86,10 @@ export type ResolutionPriceEvent = FeedEventBase & {
   role: "resolution";
   kind: ResolutionPriceKind;
   sourceType?: ResolutionSourceType;
+  /** Exact decimal representation retained for settlement/anchor authority. */
+  exactPrice?: string;
   price: number;
+  exactPriceToBeat?: string;
   priceToBeat?: number;
   rawOracleAnswer?: string;
   roundId?: string;

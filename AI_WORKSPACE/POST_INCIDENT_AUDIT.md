@@ -1,5 +1,7 @@
 # Post-Incident Audit: Type 3 Deposit Wallet Fix
 
+> Historical audit. Current operating authority is `AI_WORKSPACE/CURRENT_STATE.md`. The live post/cancel acceptance harness described below was converted to offline signed-order verification on 2026-08-02; it is not an authorized or reachable live test.
+
 Date: 2026-05-20
 
 ## Baseline
@@ -68,7 +70,7 @@ Date: 2026-05-20
 | `scripts/check-balance.ts` | Balance diagnostic | Verification support | PARTIAL | Keep | Low | Safe, intentional diagnostic. |
 | `scripts/check-clob.ts` | CLOB auth/open-order diagnostic | Verification support | PARTIAL | Hardened | Medium | Replaced dummy-market open-order check with all-open-orders query. |
 | `scripts/credential-ambiguity-diagnostic.ts` | Official derivation and credential-source diagnostic | Final proof and guard | YES | Keep | Low | Prints key ID only; clears static credential ambiguity. |
-| `scripts/final-acceptance-test.ts` | Live post/cancel acceptance harness | Final proof | YES | Keep, refactored helper | Medium | Now uses shared CLOB response failure helper. |
+| `scripts/final-acceptance-test.ts` | Historical live post/cancel harness | Historical proof only | NO | Converted to offline signed-order verification on 2026-08-02 | High | Raw order submission was an adapter bypass and is removed. |
 | `scripts/probe-wallets.ts` | Wallet probe | Debugging experiment | NO | Removed from active scripts | Medium | No ongoing value after official derivation. Local ignored archive copy retained. |
 | `scripts/test-order.ts` | One-off static-credential order poster | Debugging experiment | NO | Removed from active scripts | High | Required static `POLY_API_*`, contradicted final auth model, and could mislead future runs. |
 | `scripts/verify-raw-order.ts` | Raw Type 3 order assertion | Regression guard | YES | Keep | Low | Confirms maker/signer/signature/order version on production client path. |

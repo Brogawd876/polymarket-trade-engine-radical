@@ -187,8 +187,9 @@ export function appendSettlementReference(
   references: ReferencePricePoint[],
   settlement: { tsMs: number; direction: "UP" | "DOWN" | "TIE" },
 ): ReferencePricePoint[] {
+  // BTC Up/Down 5m equality resolves to UP under the current contract rules.
   const settlementUpValue =
-    settlement.direction === "UP" ? 1 : settlement.direction === "DOWN" ? 0 : 0.5;
+    settlement.direction === "DOWN" ? 0 : 1;
   return [...references, { tsMs: settlement.tsMs, settlementUpValue }];
 }
 

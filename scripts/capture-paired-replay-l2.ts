@@ -91,7 +91,12 @@ async function main() {
       ? recorderDurationMs 
       : timeToSlotEnd + tailBufferMs;
 
-  const rawL2DurationMs = replayDurationMs + recorderSafetyBufferMs;
+  // Raw L2 starts before the replay recorder. Give it enough lifetime for the
+  // readiness window plus a post-replay safety tail, then wait for that tail
+  // explicitly before requesting a clean shutdown.
+  const recorderReadyTimeoutMs = 10000;
+  const rawL2DurationMs =
+    replayDurationMs + recorderReadyTimeoutMs + recorderSafetyBufferMs;
 
   console.log(`[Orchestrator] Starting Raw L2 Recorder (saving to ${rawL2LogPath}, duration ${rawL2DurationMs}ms)...`);
   const recorderStartedAtMs = Date.now();
@@ -106,8 +111,12 @@ async function main() {
   }, (data) => process.stderr.write(`[Recorder ERR] ${data}`));
 
   let waitAttempts = 0;
-  while (!recorderReady && waitAttempts < 100) {
-    await new Promise(r => setTimeout(r, 100));
+  const recorderReadyPollMs = 100;
+  while (
+    !recorderReady &&
+    waitAttempts < recorderReadyTimeoutMs / recorderReadyPollMs
+  ) {
+    await new Promise(r => setTimeout(r, recorderReadyPollMs));
     waitAttempts++;
   }
 
@@ -127,6 +136,11 @@ async function main() {
   const { code: runtimeExitCode } = await runtime.promise;
   const runtimeEndedAtMs = Date.now();
   console.log(`[Orchestrator] Replay Recorder exited with code ${runtimeExitCode}`);
+
+  console.log(
+    `[Orchestrator] Waiting ${recorderSafetyBufferMs}ms for the raw L2 safety tail...`,
+  );
+  await new Promise(r => setTimeout(r, recorderSafetyBufferMs));
 
   console.log(`[Orchestrator] Attempting clean recorder shutdown via stdin...`);
   recorder.process.stdin?.write("stop\n");

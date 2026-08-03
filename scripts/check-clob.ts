@@ -26,7 +26,7 @@ async function run() {
 
     try {
         const creds = await client.createOrDeriveApiKey(0);
-        console.log(`Derived Key: ${creds.key}`);
+        console.log("Derived API credentials successfully (values redacted)");
 
         const authClient = new ClobClient({
             host: "https://clob.polymarket.com",

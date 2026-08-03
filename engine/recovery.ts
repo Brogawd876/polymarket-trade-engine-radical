@@ -113,25 +113,47 @@ async function recoverMarket(
     const order = market.pendingOrders[i]!;
     const status = orderStatuses[i];
 
+    if (!status) {
+      throw new Error(
+        `startup reconciliation unresolved for ${order.orderId}: order query returned no authoritative state`,
+      );
+    }
+
     if (status?.status === "filled") {
       orderHistory.push({
         action: order.action,
         price: order.price,
-        shares: order.shares,
+        shares: status.actualShares,
         fee: 0,
         tokenId: order.tokenId,
       });
-    } else if (status?.status === "live") {
+    } else if (status.status === "live" || status.status === "delayed") {
+      const filledShares = Math.min(order.shares, status.actualShares);
+      if (filledShares > 0) {
+        orderHistory.push({
+          action: order.action,
+          price: order.price,
+          shares: filledShares,
+          fee: 0,
+          tokenId: order.tokenId,
+        });
+      }
+      const remainder = order.shares - filledShares;
+      if (remainder <= 0) continue;
       stillPending.push({
         orderId: order.orderId,
         tokenId: order.tokenId,
         action: order.action,
         price: order.price,
-        shares: order.shares,
+        shares: remainder,
         expireAtMs: order.expireAtMs,
         placedAtMs: 0, // already confirmed live — bypass CLOB indexing grace period
         // No callbacks — recovered markets run in drain mode
       });
+    } else if (status.status !== "cancelled") {
+      throw new Error(
+        `startup reconciliation unsupported state for ${order.orderId}: ${status.status}`,
+      );
     }
   }
 

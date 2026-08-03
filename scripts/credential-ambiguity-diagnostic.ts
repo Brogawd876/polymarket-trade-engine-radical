@@ -78,7 +78,7 @@ async function main() {
       : "NO MATCH: current POLY_FUNDER_ADDRESS is wrong and must be replaced",
   );
   console.log("Credential source: freshly derived from owner signer");
-  console.log(`Derived CLOB API key ID: ${creds.key}`);
+  console.log("Derived CLOB API credentials successfully (values redacted)");
 
   const clob = new ClobClient({
     host: CLOB_HOST,

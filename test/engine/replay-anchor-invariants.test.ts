@@ -28,8 +28,8 @@ describe("Replay Anchor Invariance Invariants", () => {
         assetPrice: 65000
     });
     
-    // Check spot is updated
-    expect(adapter.latest()?.price).toBe(65000);
+    // The resolution adapter must ignore predictive spot entirely.
+    expect(adapter.latest()?.price).toBe(60000);
     
     // Check anchor is STILL 60000
     const anchor2 = await adapter.priceToBeat(round);
@@ -63,7 +63,7 @@ describe("Replay Anchor Invariance Invariants", () => {
         assetPrice: 65000
     });
 
-    expect(adapter.latest()?.price).toBe(65000);
+    expect(adapter.latest()).toBeNull();
     const anchor = await adapter.priceToBeat(round);
     expect(anchor).toBeNull();
   });

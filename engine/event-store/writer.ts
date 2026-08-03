@@ -118,7 +118,9 @@ export class NdjsonEventWriter implements EventWriter {
   private async openHandle(): Promise<FileHandle> {
     if (this.handle) return this.handle;
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    this.handle = await open(this.filePath, "a");
+    // A run's authoritative event file is immutable-by-identity. Reusing an
+    // exact path is a configuration error, never an instruction to append.
+    this.handle = await open(this.filePath, "ax");
     return this.handle;
   }
 }

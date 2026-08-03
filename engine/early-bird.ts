@@ -59,6 +59,11 @@ import {
 import type { VenueMetadata } from "./bot-core/index.ts";
 import { CounterfactualRiskGate, type CounterfactualRiskMode } from "./replay/counterfactual-risk-gate.ts";
 import { type RiskGate } from "./bot-core/risk-gate.ts";
+import {
+  deriveOperatingMode,
+  TradingKernel,
+  type OperatingMode,
+} from "./trading-kernel.ts";
 
 const SAVE_INTERVAL_MS = 5000;
 
@@ -76,6 +81,8 @@ export type EarlyBirdRuntimeOptions = {
   riskMode?: CounterfactualRiskMode;
   bypassRiskReasons?: string[];
   initialBalance?: number;
+  operatingMode?: OperatingMode;
+  tradingKernel?: TradingKernel;
 };
 
 export type EngineStatus = {
@@ -85,6 +92,8 @@ export type EngineStatus = {
   isShuttingDown: boolean;
   sessionPnl: number;
   sessionLoss: number;
+  evidenceHealthy: boolean;
+  completionProven: boolean;
   summary: string;
 };
 
@@ -132,7 +141,11 @@ export class EarlyBird {
   private readonly _marketLogMode: "normal" | "disabled";
   private readonly _replayVenueMetadata?: Partial<VenueMetadata>;
   private readonly _riskGate: RiskGate;
+  private readonly _tradingKernel: TradingKernel;
   private _runCompletedEventEmitted = false;
+  private _completionProven = false;
+  private _evidenceFailure: Error | null = null;
+  private readonly _runStartedPromise: Promise<void>;
   private _tickInterval: unknown = null;
   private readonly _orderBookFactory?: (
     clock: Clock,
@@ -168,6 +181,19 @@ export class EarlyBird {
     this._maxSessionProfit = parseFloat(process.env.MAX_SESSION_PROFIT ?? "1000000");
     this._clock = runtime.clock ?? new RealClock();
     this._telemetry = runtime.telemetry ?? new NullTelemetrySink();
+    const operatingMode =
+      runtime.operatingMode ??
+      deriveOperatingMode({
+        replayFile,
+        productionRequested: prod,
+      });
+    this._tradingKernel =
+      runtime.tradingKernel ??
+      new TradingKernel(operatingMode, () => this._clock.nowMs());
+    this._tradingKernel.assertRuntimeCompatible({
+      replayFile: Boolean(replayFile),
+      exchangeClientRequested: prod,
+    });
     this._marketLogMode = runtime.marketLogMode ?? "normal";
     this._replayVenueMetadata = runtime.replayVenueMetadata;
     this._eventWriter =
@@ -273,7 +299,7 @@ export class EarlyBird {
         strategy: this._strategyName
       }
     });
-    void this._eventWriter.append({
+    this._runStartedPromise = this._eventWriter.append({
       eventType: "run_started",
       source: "early-bird",
       strategyId: this._strategyName,
@@ -282,13 +308,24 @@ export class EarlyBird {
         status: "started",
         commitSha: process.env.GIT_COMMIT || process.env.VERCEL_GIT_COMMIT_SHA || "local",
       },
-    }).catch((error) => {
-      log.write(`[event-store] failed to write run_started: ${error}`, "red");
+    }).then(() => undefined).catch((error) => {
+      this._evidenceFailure =
+        error instanceof Error ? error : new Error(String(error));
+      log.write(
+        `[event-store] failed to write run_started: ${this._evidenceFailure.message}`,
+        "red",
+      );
     });
   }
 
   async start(): Promise<void> {
     try {
+      await this._runStartedPromise;
+      if (this._evidenceFailure) {
+        throw new Error(
+          `authoritative event journal unavailable: ${this._evidenceFailure.message}`,
+        );
+      }
       log.write("[startup] Starting");
       this._ticker.schedule();
       log.write("[startup] Waiting for ticker ready");
@@ -463,6 +500,10 @@ export class EarlyBird {
     return this._shuttingDown;
   }
 
+  get completionProven(): boolean {
+    return this._completionProven;
+  }
+
   getStatus(): EngineStatus {
       return {
           mode: this._replayReader ? "replay" : (this._prod ? "live" : "sim"),
@@ -471,6 +512,12 @@ export class EarlyBird {
           isShuttingDown: this._shuttingDown,
           sessionPnl: this._sessionPnl,
           sessionLoss: this._sessionLoss,
+          evidenceHealthy:
+            this._evidenceFailure === null &&
+            [...this._lifecycles.values()].every(
+              lifecycle => !lifecycle.isInvalid,
+            ),
+          completionProven: this._completionProven,
           summary: this.replayStateSummary()
       };
   }
@@ -523,6 +570,12 @@ export class EarlyBird {
     while (this._lifecycles.size > 0 && attempts < 20) {
       await new Promise((r) => setTimeout(r, 500));
       attempts++;
+    }
+
+    if (this._lifecycles.size > 0) {
+      throw new Error(
+        `shutdown incomplete: ${this._lifecycles.size} lifecycle(s) remain unresolved`,
+      );
     }
 
     if (this._tickInterval) this._clock.clearInterval(this._tickInterval);
@@ -584,6 +637,7 @@ export class EarlyBird {
             marketLogMode: this._marketLogMode,
             eventWriter: this._eventWriter,
             liveMode: this._prod,
+            tradingKernel: this._tradingKernel,
           }),
 
         );
@@ -675,22 +729,28 @@ export class EarlyBird {
 
   private async _emitRunCompleted(status: "completed" | "failed" | "canceled"): Promise<void> {
     if (this._runCompletedEventEmitted) return;
-    this._runCompletedEventEmitted = true;
-    await this._eventWriter.append({
-      eventType: "run_completed",
-      source: "early-bird",
-      strategyId: this._strategyName,
-      payload: {
-        status,
-        mode: this._replayReader ? "replay" : (this._prod ? "live" : "sim"),
-        reason: this._shuttingDown ? "shutdown" : undefined,
-      },
-    }).catch((error) => {
-      log.write(`[event-store] failed to write run_completed: ${error}`, "red");
-    });
-    await this._eventWriter.close().catch((error) => {
-      log.write(`[event-store] failed to close writer: ${error}`, "red");
-    });
+    try {
+      await this._eventWriter.append({
+        eventType: "run_completed",
+        source: "early-bird",
+        strategyId: this._strategyName,
+        payload: {
+          status,
+          mode: this._replayReader ? "replay" : (this._prod ? "live" : "sim"),
+          reason: this._shuttingDown ? "shutdown" : undefined,
+        },
+      });
+      await this._eventWriter.close();
+      this._runCompletedEventEmitted = true;
+      this._completionProven = this._lifecycles.size === 0;
+    } catch (error) {
+      this._evidenceFailure =
+        error instanceof Error ? error : new Error(String(error));
+      this._completionProven = false;
+      throw new Error(
+        `shutdown evidence write failed: ${this._evidenceFailure.message}`,
+      );
+    }
   }
 
   private _startShutdown(reason: string): void {

@@ -2,7 +2,7 @@ import type { BotFeedEvent, RoundWindow } from "./data-sources.ts";
 
 export type StrategyIntentSide = "UP" | "DOWN";
 export type StrategyIntentAction = "buy" | "sell" | "cancel" | "hold";
-export type StrategyIntentOrderType = "GTC" | "FOK";
+export type StrategyIntentOrderType = "GTC" | "FAK" | "FOK";
 
 export type StrategyIntentBase = {
   id: string;

@@ -95,7 +95,7 @@ export type TelemetryEvent = {
     | { type: "LEAD_LAG_UPDATE"; payload: LeadLagSnapshot }
     | { type: "ORDER_INTENT"; payload: { slug: string; intent: OrderIntentSnapshot } }
     | { type: "RISK_DECISION"; payload: { slug: string; approved: boolean; reasons: string[]; intent: OrderIntentSnapshot } }
-    | { type: "ORDER_LIFECYCLE"; payload: { slug: string; orderId?: string; intentId?: string; status: "placed" | "filled" | "partial_filled" | "canceled" | "expired" | "failed"; side: "UP" | "DOWN"; action: "buy" | "sell"; price: number; shares: number; error?: string } }
+    | { type: "ORDER_LIFECYCLE"; payload: { slug: string; orderId?: string; intentId?: string; status: "placed" | "filled" | "partial_filled" | "canceled" | "expired" | "failed"; side: "UP" | "DOWN"; action: "buy" | "sell"; price: number; shares: number; remainingShares?: number; error?: string } }
     | { type: "ROUND_PNL"; payload: { slug: string; pnl: number } }
     | { type: "ROUND_RESOLUTION"; payload: { slug: string; openPrice: number; closePrice: number; direction: "UP" | "DOWN" } }
     | { type: "SESSION_PNL"; payload: { pnl: number; loss: number } }
@@ -110,6 +110,8 @@ export type EngineStatus = {
   isShuttingDown: boolean;
   sessionPnl: number;
   sessionLoss: number;
+  evidenceHealthy: boolean;
+  completionProven: boolean;
   summary: string;
 };
 

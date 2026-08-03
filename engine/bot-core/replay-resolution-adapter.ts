@@ -123,33 +123,6 @@ export class ReplayResolutionAdapter implements ResolutionSourceAdapter {
 
       this._latest = resEvent;
       for (const h of this.handlers) h(resEvent);
-    } else if (evt.type === "ticker") {
-      if (evt.assetPrice === undefined || evt.assetPrice === null) return;
-
-      const clock = createEventClock({
-        receivedAtMs: evt.ts,
-        processedAtMs: evt.ts,
-        monotonicReceivedNs: BigInt(evt.ts),
-      });
-
-      const resEvent: ResolutionPriceEvent = {
-        id: `replay-res-live-${evt.ts}`,
-        role: "resolution",
-        source: this.source,
-        sourceType: "replay",
-        asset: this.asset,
-        kind: "live",
-        price: evt.assetPrice,
-        priceToBeat: this._latest?.priceToBeat,
-        clock,
-        quality: "live",
-        freshnessMs: 0,
-        lagMs: 0,
-        round: this.reader.round ?? undefined
-      };
-
-      this._latest = resEvent;
-      for (const h of this.handlers) h(resEvent);
     }
   }
 }

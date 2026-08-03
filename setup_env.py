@@ -35,7 +35,6 @@ DEFAULTS = {
     "BUILDER_SECRET": "",
     "BUILDER_PASSPHRASE": "",
     "OPERATOR_AUTH_TOKEN": "",
-    "FORCE_PROD": "false",
     "MAX_SESSION_LOSS": "3",
     "MAX_SESSION_PROFIT": "0.50",
     "WALLET_BALANCE": "50",
@@ -47,16 +46,15 @@ HELP = {
     "TICKER": "Default data sources. Leave this alone for BTC 5m.",
     "MARKET_ASSET": "Default is btc.",
     "MARKET_WINDOW": "Default is 5m.",
-    "PRIVATE_KEY": "Private key for the dedicated MetaMask bot account. Hidden.",
-    "POLY_FUNDER_ADDRESS": "Type 3 deposit wallet derived from the PRIVATE_KEY owner; do not copy between owners.",
-    "POLY_SIGNATURE_TYPE": "Use 3 for the proven POLY_1271 deposit-wallet flow.",
+    "PRIVATE_KEY": "Dormant while live submission is disabled. Leave blank for replay/paper.",
+    "POLY_FUNDER_ADDRESS": "Dormant public funder address. Leave blank for replay/paper.",
+    "POLY_SIGNATURE_TYPE": "Dormant exchange signature type.",
     "POLY_API_KEY_NONCE": "Integer nonce used to derive CLOB API keys. Default is 1.",
     "POLYGON_RPC_URL": "Primary Polygon JSON-RPC endpoint.",
     "BUILDER_KEY": "Optional Polymarket Builder Code key.",
     "BUILDER_SECRET": "Optional Polymarket Builder Code secret. Hidden.",
     "BUILDER_PASSPHRASE": "Optional Polymarket Builder Code passphrase. Hidden.",
     "OPERATOR_AUTH_TOKEN": "Optional local control-panel password. Hidden.",
-    "FORCE_PROD": "Keep false so live runs still ask for confirmation.",
     "MAX_SESSION_LOSS": "Session loss cap in dollars.",
     "MAX_SESSION_PROFIT": "Session profit target in dollars. Bot will exit once reached.",
     "WALLET_BALANCE": "Paper/simulation wallet balance.",
@@ -125,7 +123,7 @@ class EnvSetupApp(tk.Tk):
 
         subtitle = ttk.Label(
             root,
-            text="Defaults are already set for BTC 5-minute Type 3 trading. Fill the owner key and its derived deposit wallet, add Builder Codes only for wrap/unwrap/redeem, then Save .env.",
+            text="Configure replay and simulated paper execution. Live exchange submission is disabled; wallet and Builder inputs are dormant and may be left blank.",
             wraplength=700,
         )
         subtitle.pack(anchor="w", pady=(4, 12))
@@ -148,7 +146,7 @@ class EnvSetupApp(tk.Tk):
         row = self._choice(form, row, "MARKET_ASSET", ("btc", "eth", "xrp", "sol", "doge"))
         row = self._choice(form, row, "MARKET_WINDOW", ("5m", "15m"))
 
-        row = self._section(form, row, "Wallet / Login")
+        row = self._section(form, row, "Dormant Exchange Inputs (Not Used)")
         row = self._field(form, row, "PRIVATE_KEY", secret=True)
         row = self._field(form, row, "POLY_FUNDER_ADDRESS")
         row = self._choice(
@@ -173,14 +171,13 @@ class EnvSetupApp(tk.Tk):
                 if item.startswith(value)
             ),
         )
-        row = self._section(form, row, "Builder Codes Optional")
+        row = self._section(form, row, "Dormant Builder Inputs (Not Used)")
         row = self._field(form, row, "BUILDER_KEY", secret=True)
         row = self._field(form, row, "BUILDER_SECRET", secret=True)
         row = self._field(form, row, "BUILDER_PASSPHRASE", secret=True)
 
         row = self._section(form, row, "Safety / Runtime")
         row = self._field(form, row, "OPERATOR_AUTH_TOKEN", secret=True)
-        row = self._choice(form, row, "FORCE_PROD", ("false", "true"))
         row = self._field(form, row, "MAX_SESSION_LOSS")
         row = self._field(form, row, "MAX_SESSION_PROFIT")
         row = self._field(form, row, "WALLET_BALANCE")
@@ -254,7 +251,7 @@ class EnvSetupApp(tk.Tk):
         if private_key and not private_key.startswith("0x"):
             private_key = f"0x{private_key}"
             self.vars["PRIVATE_KEY"].set(private_key)
-        if not PRIVATE_KEY_RE.match(private_key):
+        if private_key and not PRIVATE_KEY_RE.match(private_key):
             messagebox.showerror(
                 "Invalid private key",
                 "PRIVATE_KEY must be 0x followed by 64 hex characters.",
@@ -262,7 +259,7 @@ class EnvSetupApp(tk.Tk):
             return False
 
         funder = self._normalized("POLY_FUNDER_ADDRESS")
-        if not ADDRESS_RE.match(funder):
+        if funder and not ADDRESS_RE.match(funder):
             messagebox.showerror(
                 "Invalid funder address",
                 "POLY_FUNDER_ADDRESS must be 0x followed by 40 hex characters.",
@@ -286,7 +283,7 @@ class EnvSetupApp(tk.Tk):
             )
             return False
 
-        for key in ("FORCE_PROD", "CHAINLINK_BTC_5M_REFERENCE_VERIFIED"):
+        for key in ("CHAINLINK_BTC_5M_REFERENCE_VERIFIED",):
             if self._normalized(key) not in {"false", "true"}:
                 messagebox.showerror("Invalid boolean", f"{key} must be false or true.")
                 return False
@@ -319,7 +316,6 @@ BUILDER_SECRET={self._normalized("BUILDER_SECRET")}
 BUILDER_PASSPHRASE={self._normalized("BUILDER_PASSPHRASE")}
 
 OPERATOR_AUTH_TOKEN={self._normalized("OPERATOR_AUTH_TOKEN")}
-FORCE_PROD={self._normalized("FORCE_PROD")}
 MAX_SESSION_LOSS={self._normalized("MAX_SESSION_LOSS")}
 MAX_SESSION_PROFIT={self._normalized("MAX_SESSION_PROFIT")}
 WALLET_BALANCE={self._normalized("WALLET_BALANCE")}

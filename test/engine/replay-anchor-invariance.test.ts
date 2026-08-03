@@ -23,14 +23,14 @@ describe("Replay Anchor Invariance", () => {
     expect(anchor?.price).toBe(60000);
     expect(adapter.latestAnchor()?.price).toBe(60000);
 
-    // 2. Spot updates (ticker)
+    // 2. Predictive spot updates are not resolution truth.
     reader._h({
         ts: 2000,
         type: "ticker",
         assetPrice: 70000
     });
 
-    expect(adapter.latest()?.price).toBe(70000);
+    expect(adapter.latest()?.price).toBe(60000);
     
     // THE INVARIANT: Anchor must still be 60000
     const anchor2 = await adapter.priceToBeat(round);
